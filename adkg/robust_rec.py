@@ -414,10 +414,15 @@ class Robust_Rec:
         key_proposal = [i for i in range(self.n)]
         poly, err = [None] * len(rbc_shares), [None] * len(rbc_shares)
         rec_robust_interpolate_time = time.time()
+        rec_values = []
         for i in range(len(rbc_shares)): 
             poly[i], err[i] = await robust_reconstruct_admpc(rbc_shares[i], key_proposal, GFEG1, self.t, point, self.t)
+            constant = int(poly[i].coeffs[0])
+            rec_values.append(self.ZR(constant))
         rec_robust_interpolate_time = time.time() - rec_robust_interpolate_time
         print(f"rec_robust_interpolate_time: {rec_robust_interpolate_time} len(rbc_shares): {len(rbc_shares)} len(rbc_shares[0]): {len(rbc_shares[0])}")
+        return rec_values
+    
         te = int(poly[0].coeffs[0])
         tes = self.ZR(te)
         err_list = [list(err[i]) for i in range(len(err))]
