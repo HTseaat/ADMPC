@@ -1,6 +1,6 @@
 # AD-MPC: Fully Asynchronous Dynamic MPC with Guaranteed Output Delivery
 
-<!-- ## Running on local machine
+## Setup
 
 ### Required tools
 1. Install `Docker`_. (For Linux, see `Manage Docker as a non-root user`_) to
@@ -8,7 +8,7 @@ run ``docker`` without ``sudo``.)
 
 2. Install `docker-compose`
 
-### Building
+<!-- ### Building
 
 1. The image will need to be built  (this will likely take a while). Inside the `htadkg` folder run
 ```
