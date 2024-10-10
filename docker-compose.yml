@@ -1,7 +1,7 @@
 version: '3.4'
 
 services:
-  adkg:
+  admpc:
   # 这里加了一个端口映射
     ports:
       - "7001:7001"
