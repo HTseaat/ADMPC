@@ -1,4 +1,4 @@
-# AD-MPC: Fully Asynchronous Dynamic MPC with Guaranteed Output Delivery
+# AD-MPC: Asynchronous Dynamic MPC with Guaranteed Output Delivery
 
 ## Setup
 
