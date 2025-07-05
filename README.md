@@ -1,6 +1,6 @@
 # AD-MPC: Asynchronous Dynamic MPC with Guaranteed Output Delivery
 
-Asynchronous Dynamic MPC (AD‑MPC) extends dynamic MPC protocols to fully asynchronous networks while guaranteeing output delivery (GOD) under the optimal resilience threshold (n = 3t + 1). This repository contains an implementation of AD‑MPC.
+Asynchronous Dynamic MPC (AD‑MPC) extends dynamic MPC protocols to fully asynchronous networks while guaranteeing output delivery (GOD) under the optimal resilience (n = 3t + 1). This repository contains an implementation of AD‑MPC.
 
 ## Setup
 
@@ -8,7 +8,7 @@ Asynchronous Dynamic MPC (AD‑MPC) extends dynamic MPC protocols to fully async
 
 2. Move into the project root:
    ```bash
-   cd AD-MPC
+   cd ADMPC
    ```
 
 3. Build the Docker image:
