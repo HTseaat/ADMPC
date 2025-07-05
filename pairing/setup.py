@@ -3,6 +3,7 @@ import sys
 from setuptools import setup
 from setuptools.command.test import test as test_command
 
+
 try:
     from setuptools_rust import RustExtension
 except ImportError:
@@ -34,7 +35,7 @@ tests_require = install_requires + ["pytest", "pytest-benchmark"]
 
 setup(
     name="pypairing",
-    version="0.1.0",
+    version="0.1.2",
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Development Status :: 3 - Alpha",
@@ -46,6 +47,7 @@ setup(
     ],
     packages=["pypairing"],
     rust_extensions=[RustExtension("pypairing.pypairing", "Cargo.toml")],
+    # rust_extensions=[RustExtension("pypairing.pypairing", "Cargo.toml", debug=False)],
     install_requires=install_requires,
     tests_require=tests_require,
     setup_requires=setup_requires,

@@ -353,13 +353,14 @@ class TaskProgramRunner(ProgramRunner):
             *[mpc_instance.get_acss_output() for mpc_instance in self.mpc_instances]
         )
 
-        print(f"outputs: {outputs}")
-        print(f"len rand_shares: {len(outputs[0][1])}")
+        # print(f"outputs: {outputs}")
+        print(f"here?")
+        # print(f"len rand_shares: {len(outputs[0][1])}")
         
-        shares = [None] * self.N
-        shares = [output[2] for output in outputs]
+        # shares = [None] * self.N
+        # shares = [output[2] for output in outputs]
 
-        print(f"shares: {shares}")
+        # print(f"shares: {shares}")
 
         
 

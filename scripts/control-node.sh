@@ -1,38 +1,98 @@
+#!/usr/bin/env bash
 
 set -e
+
+echo "Usage: $0 <config_dir> [protocol] [timeout]"
+
+# Read config directory
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <config_dir> [protocol] [timeout]"
+    exit 1
+fi
+conf_dir=$1
+
+# Optional protocol override (non-numeric second arg)
+if [[ $# -ge 2 && ! "$2" =~ ^[0-9] ]]; then
+    protocol_override="$2"
+    TIMEOUT=${3:-12}
+else
+    protocol_override=""
+    TIMEOUT=${2:-12}
+fi
+
+IFS='_' read -r protocol_from_dir total_cm layer_offset N <<< "$conf_dir"
+protocol="$protocol_from_dir"
+# Use override if provided
+if [ -n "$protocol_override" ]; then
+    protocol="$protocol_override"
+fi
+
+# Compute how many containers per node: layer_offset + 2
+containers_per_node=$(( layer_offset + 2 ))
+
+# Determine which run module to invoke
+case "$protocol" in
+    admpc)
+        run_mod="scripts.admpc_dynamic_run"
+        ;;
+    fluid1)
+        run_mod="scripts.fluid_mpc_run_1"
+        ;;
+    fluid2)
+        run_mod="scripts.fluid_mpc_run"
+        ;;
+    hbmpc)
+        run_mod="scripts.honeybadgermpc_run"
+        ;;
+    hbmpc_attack)
+        run_mod="scripts.hbmpc_attack_run"
+        ;;
+    *)
+        echo "Unknown protocol: $protocol"
+        exit 1
+        ;;
+esac
+
+# Base directory for JSON files
+json_dir="conf/$conf_dir"
+
+mkdir -p logs      # create local log directory
 
 source -- ./common.sh
 ensure_script_dir
 
+
 source -- ./config.sh
 
-base_port=7000  # 设定一个基础端口号，比如7000
-containers_per_node=4  # 每个服务器上的容器数量，相当于是多少层
+
+base_port=7000  # setting basic port, e.g. 7000
 delay_between_ssh_commands=0.1
 
-for j in $(seq 1 $containers_per_node); do
+if [ "$protocol" = "hbmpc" ] || [ "$protocol" = "hbmpc_attack" ]; then
+    # Single loop for hbmpc: one container per node
     for i in $(seq 1 $NODE_NUM); do
-    
-        external_port=$((base_port + j))  # 对每个容器计算独特的外部端口
+        external_port=$((base_port + 1))
         ssh_user_host="${NODE_SSH_USERNAME}@${NODE_IPS[$i - 1]}"
-        # container_name="adkg_container_$i_$j"  # 为容器创建一个独特的名称，假设您的容器服务名支持这种命名方式
-
-        # 运行 docker-compose 命令，为每个容器设置唯一的端口映射
-        file_num=$(((j-1)*NODE_NUM+i-1))
-        ssh "$ssh_user_host" -- "cd ~/AD-MPC && docker-compose run -p $external_port:$external_port adkg python3 -m scripts.admpc_dynamic_run -d -f conf/admpc_100_2_4/local.$file_num.json -time 12" &
-        
-        # ssh "$ssh_user_host" -- "cd ~/htadkg && docker-compose run -p $external_port:$external_port adkg python3 -m scripts.fluid_mpc_run -d -f conf/fluid_100_10_16/local.$file_num.json -time 12" &
-        
-        # ssh "$ssh_user_host" -- "cd ~/htadkg && docker-compose run -p $external_port:$external_port adkg python3 -m scripts.honeybadgermpc_run -d -f conf/honeybadgermpc_100_10_16/local.$file_num.json -time 12" &
-        sleep $delay_between_ssh_commands
-
-        # 如果您有其他命令需要在节点上执行，请取消下面这行注释并适当调整
-        # ssh "$ssh_user_host" -- "cd ~/sdumoe-chain-run && bash node-control.sh $i $@" || true
+        file_num=$((i - 1))
+        ssh -T "$ssh_user_host" \
+            "cd ~/adkg && docker-compose run -p $external_port:$external_port htadkg_adkg \
+            python3 -u -m $run_mod -d -f $json_dir/local.${file_num}.json -time $TIMEOUT" \
+            > "logs/node${i}.log" 2>&1 &
     done
-    # base_port=$((base_port + containers_per_node))  # 更新基础端口，为下一个服务器上的容器准备
-done
+else
+    # Two-layer loops for admpc and fluid
+    for j in $(seq 1 $containers_per_node); do
+        for i in $(seq 1 $NODE_NUM); do
+            external_port=$((base_port + j))
+            ssh_user_host="${NODE_SSH_USERNAME}@${NODE_IPS[$i - 1]}"
+            file_num=$(((j - 1) * NODE_NUM + i - 1))
+            ssh -T "$ssh_user_host" \
+                "cd ~/adkg && docker-compose run -p $external_port:$external_port htadkg_adkg \
+                python3 -u -m $run_mod -d -f $json_dir/local.${file_num}.json -time $TIMEOUT" \
+                > "logs/node${i}_cont${j}.log" 2>&1 &
+        done
+    done
+fi
 
-# 等待所有后台 SSH 命令完成
+# waiting SSH commands to finish
 wait
-
-

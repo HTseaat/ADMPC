@@ -11,7 +11,6 @@ from adkg.acss import ACSS
 from adkg.broadcast.tylerba import tylerba
 from adkg.broadcast.optqrbc import optqrbc
 
-from adkg.preprocessing import PreProcessedElements
 
 from adkg.mpc import TaskProgramRunner
 from adkg.robust_rec import robust_reconstruct_admpc, Robust_Rec
@@ -75,7 +74,7 @@ class ADMPC:
             self.acss.kill()
             self.acss_task.cancel()
         except Exception:
-            logging.info("ADKG task finished")
+            logging.info("ADMPC task finished")
         
 
     def __enter__(self):
@@ -115,7 +114,6 @@ class ADMPC:
         # batch_rec_list.append(epsilon_list)
 
         # robust_rec_signal = asyncio.Event()
-        sttime = time.time()
         # rec_gamma = await self.robust_rec_step(gamma, 0)
         
         # await robust_rec_signal.wait()
@@ -136,7 +134,6 @@ class ADMPC:
             mult_outputs[i] = mult_triples[i][2] + rec_gamma_list[i] * mult_triples[i][1] + rec_epsilon_list[i] * mult_triples[i][0] + rec_gamma_list[i] * rec_epsilon_list[i]
 
         # rec_gamma, rec_epsilon = await asyncio.gather(self.robust_rec_step(gamma, 0), self.robust_rec_step(epsilon, 1))  
-        print(f"sttime: {time.time()-sttime}")
 
         # mult_output = mult_triples[2] + rec_gamma * mult_triples[1] + rec_epsilon * mult_triples[0] + rec_gamma * rec_epsilon
         return mult_outputs

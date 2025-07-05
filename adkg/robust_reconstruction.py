@@ -34,6 +34,8 @@ async def robust_reconstruct(field_futures, field, n, t, point, degree):
     return None, None
 
 async def robust_reconstruct_admpc(shares_list, key_proposal, field, t, point, degree):
+
+
     use_omega_powers = point.use_omega_powers
     enc = EncoderFactory.get(
         point, Algorithm.FFT if use_omega_powers else Algorithm.VANDERMONDE
@@ -46,7 +48,10 @@ async def robust_reconstruct_admpc(shares_list, key_proposal, field, t, point, d
 
     for i in range(len(shares_list)):
         if i in key_proposal: 
-            incremental_decoder.add(i, [shares_list[i]])
+            val = shares_list[i]
+            val = val.value if hasattr(val, "value") else int(val)
+            incremental_decoder.add(i, [val])
+
 
         if incremental_decoder.done(): 
             polys, errors = incremental_decoder.get_results()
@@ -63,13 +68,21 @@ async def robust_rec_admpc(shares_list, key_proposal, field, t, point, degree):
         point, Algorithm.FFT if use_omega_powers else Algorithm.VANDERMONDE
     )
     robust_dec = RobustDecoderFactory.get(t, point, algorithm=Algorithm.GAO)
+    
+    
     incremental_decoder = IncrementalDecoder(enc, dec, robust_dec, degree, 1, t)
 
+
+
     for i in range(len(shares_list)):
+        # if i == 2: i = i + 1
+        val = shares_list[i]
+        val = val.value if hasattr(val, "value") else int(val)
+        incremental_decoder.add(key_proposal[i], [val])
 
-        incremental_decoder.add(key_proposal[i], [shares_list[i]])
 
-        if incremental_decoder.done(): 
+        if incremental_decoder.done():
+            # print(f"incremental_decoder.done()")
             polys, errors = incremental_decoder.get_results()
             return polynomials_over(field)(polys[0]), errors
     

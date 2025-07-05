@@ -18,7 +18,6 @@ from adkg.poly_commit_hybrid import PolyCommitHybrid
 from pytest import mark
 from random import randint
 from adkg.polynomial import polynomials_over
-from adkg.acss_ht import ACSS_HT
 from adkg.utils.misc import print_exception_callback
 import asyncio
 import math

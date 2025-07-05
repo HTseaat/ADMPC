@@ -26,27 +26,31 @@ FROM python:3.7.13-slim AS base
 
 # Allows for log messages to be immediately dumped to the 
 # stream instead of being buffered.
-ENV PYTHONUNBUFFERED 1 
-
+ENV PYTHONUNBUFFERED=1
 # Path variables needed for Charm
-ENV LIBRARY_PATH /usr/local/lib
-ENV LD_LIBRARY_PATH /usr/local/lib
-ENV LIBRARY_INCLUDE_PATH /usr/local/include
-
-ENV PYTHON_LIBRARY_PATH /opt/venv
-ENV PATH ${PYTHON_LIBRARY_PATH}/bin:${PATH}
+ENV LIBRARY_PATH=/usr/local/lib
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV LIBRARY_INCLUDE_PATH=/usr/local/include
+ENV PYTHON_LIBRARY_PATH=/opt/venv
+ENV PATH=${PYTHON_LIBRARY_PATH}/bin:${PATH}
 
 # Make sh point to bash
 # This is being changed since it will avoid any errors in the `launch_mpc.sh` script
 # which relies on certain code that doesn't work in container's default shell.
 RUN ln -sf bash /bin/sh
 
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
+
 # Install apt dependencies
 # Put apt dependencies here that are needed by all build paths
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --fix-missing --no-install-recommends \
     build-essential \
     curl \
     git \
+    m4 \
+    autoconf \
+    automake \
+    libtool \
     iproute2 \
     libflint-dev \
     libgmp-dev \
@@ -67,10 +71,27 @@ RUN python -m virtualenv ${PYTHON_LIBRARY_PATH}
 # Install pip dependencies here that are absolutely required by setup.py for 
 # better cache performance. These should be changed rarely, as they cause
 # long rebuild times.
+WORKDIR /tmp
+
+# Build GMP from source
+RUN curl -LO https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz && \
+    tar -xf gmp-6.2.1.tar.xz && cd gmp-6.2.1 && \
+    ./configure --prefix=/usr/local && make -j$(nproc) && make install
+
+# Build MPFR from source
+RUN curl -LO https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.1.tar.gz && \
+    tar -xf mpfr-4.2.1.tar.gz && cd mpfr-4.2.1 && \
+    ./configure --prefix=/usr/local --with-gmp=/usr/local && make -j$(nproc) && make install
+
+# Build MPC from source
+RUN curl -LO https://ftp.gnu.org/gnu/mpc/mpc-1.2.1.tar.gz && \
+    tar -xf mpc-1.2.1.tar.gz && cd mpc-1.2.1 && \
+    ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local && \
+    make -j$(nproc) && make install
+
 RUN pip install \
     cffi \
     Cython \
-    gmpy2 \
     psutil \
     pycrypto \
     pyzmq \
@@ -78,6 +99,9 @@ RUN pip install \
     uvloop \
     numpy \
     reedsolo
+
+# Install gmpy2 with system GMP/MPFR/MPC
+RUN pip install gmpy2
 
 # This is needed otherwise the build for the power sum solver will fail.
 # This is a known issue in the version of libflint-dev in apt.

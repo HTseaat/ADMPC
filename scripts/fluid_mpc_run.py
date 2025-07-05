@@ -1,6 +1,5 @@
 from adkg.config import HbmpcConfig
 from adkg.ipc import ProcessProgramRunner
-from adkg.admpc import ADMPC
 from adkg.fluid_mpc import ADMPC_Multi_Layer_Control, ADMPC_Dynamic
 from adkg.poly_commit_hybrid import PolyCommitHybrid
 from pypairing import ZR, G1, blsmultiexp as multiexp, dotprod
@@ -37,12 +36,11 @@ async def _run(peers, n, t, k, my_id, start_time, layers, my_send_id, total_cm):
     pc = PolyCommitHybrid(g, h, ZR, multiexp)
     deg = k
     mat = gen_vector(t, n, ZR)
-    # 注意这里，在每个委员会中 servers 的编号都是从 0 开始的，因此在生成 send 和 recv 对的时候，要注意转换
 
     print(f"my_send_id: {my_send_id}")
     async with ProcessProgramRunner(peers, n*layers, t, my_send_id) as runner:
         send, recv = runner.get_send_recv("")
-        logging.debug(f"Starting ADMPC: {(my_id)}")
+        logging.debug(f"Starting Fluid MPC: {(my_id)}")
         logging.debug(f"Start time: {(start_time)}, diff {(start_time-int(time.time()))}")
 
         benchmark_logger = logging.LoggerAdapter(
@@ -56,11 +54,10 @@ async def _run(peers, n, t, k, my_id, start_time, layers, my_send_id, total_cm):
                     break
                 time.sleep(0.1)
             begin_time = time.time()
-            logging.info(f"ADMPC start time: {(begin_time)}")
+            logging.info(f"Fluid MPC start time: {(begin_time)}")
             admpc_task = asyncio.create_task(admpc.run_admpc(begin_time))
             await admpc_task
-            # admpc.kill()
-            # admpc_task.cancel()
+
             exec_time = time.time() - begin_time
             print(f"my_send_id: {my_send_id} exec_time: {exec_time}")
             await asyncio.sleep(30)

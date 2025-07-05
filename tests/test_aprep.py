@@ -18,7 +18,6 @@ from adkg.poly_commit_hybrid import PolyCommitHybrid
 from pytest import mark
 from random import randint
 from adkg.polynomial import polynomials_over
-from adkg.acss_ht import ACSS_HT
 from adkg.utils.misc import print_exception_callback
 import asyncio
 import math
@@ -56,7 +55,7 @@ def gen_vector(t, n, ZR):
 
     return (vm.tolist())
 
-# 这里是 protocol Robust-Rec 的测试代码
+# This is the test code for the Robust-Rec protocol
 async def prog(ctx):
     print(f"my id: {ctx.myid} ctx.N: {ctx.N}")
     t = ctx.t
@@ -67,8 +66,8 @@ async def prog(ctx):
     g, h, public_keys, private_key = ctx.g, ctx.h, ctx.public_keys, ctx.private_key
     pc = PolyCommitHybrid(g, h, ZR, multiexp)
 
-    # 假设下一个 epoch 乘法门的数量为 2
-    cm = 2
+    # Assume the number of multiplication gates in the next epoch is 2
+    cm = 50
     
     aprep_tasks = ctx.avss_tasks
     aprep_list = ctx.acss_list
@@ -76,10 +75,8 @@ async def prog(ctx):
     curve_params = (ZR, G1, multiexp, dotprod)
     mat = gen_vector(t, n, ZR)
 
-    # x = ctx.Share(4) + ctx.preproc.get_zero(ctx)
-    # X = await x.open()
+
     
-    # 这里异步延迟的设置可能还没有考虑
     aprep = APREP(public_keys, private_key, g, h, n, t, deg, myid, ctx.send, ctx.recv, pc, curve_params, mat)
     aprep_list[myid] = aprep
     aprep_tasks[myid] = asyncio.create_task(aprep.run_aprep(cm))
@@ -94,9 +91,7 @@ async def tutorial_1():
     pp.generate_bits(100, n, t)
     program_runner = TaskProgramRunner(n, t, config)
     program_runner.add(prog)
-    # program_runner.join 这个函数设计的有问题，注释掉里面的代码程序部分函数不调用了，可能会影响到 aprep 协议的输出
     results = await program_runner.join()
-    print(f"results: {results}")
     return results
 
 

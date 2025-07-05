@@ -18,7 +18,6 @@ from adkg.poly_commit_hybrid import PolyCommitHybrid
 from pytest import mark
 from random import randint
 from adkg.polynomial import polynomials_over
-from adkg.acss_ht import ACSS_HT
 from adkg.utils.misc import print_exception_callback
 import asyncio
 import math
@@ -37,36 +36,6 @@ config = {
 
 
 @TypeCheck()
-async def beaver_multiply(ctx, x: Share, y: Share):
-    """The hello world of MPC: beaver multiplication
-     - Linear operations on Share objects are easy
-     - Shares of random values are available from preprocessing
-     - Opening a Share returns a GFElementFuture
-    """
-    a, b, ab = ctx.preproc.get_triples(ctx)
-    # X = await x.open()
-    # print("X: ", X)
-    # A = await a.open()
-    # B = await b.open()
-    # C = await ab.open()
-    # print("A: ", A)
-    # print("B: ", B)
-    # mulAB = A * B
-    # print("A*B: ", mulAB)
-    # print("C: ", C)
-    D = await (x - a).open()
-    # print("D: ", D)
-    E = await (y - b).open()
-
-    # D*E is multiplying GFElements
-    # D*b, E*a are multiplying GFElement x Share -> Share
-    # ab is a Share
-    # overall the sum is a Share
-
-    xy = (D * E) + (D * b) + (E * a) + ab
-    return xy
-
-
 async def random_permute_pair(ctx, x, y):
     """
     Randomly permute a pair of secret shared values.
@@ -136,35 +105,24 @@ async def prog(ctx):
 
     curve_params = (ZR, G1, multiexp, dotprod)
 
-    # 这里假设输入的 secret 的多项式是 f(x) = 2x + 3，输入的 random values 的多项式是 g(x) = x + 4
-    # value = [ZR(2*(myid+1)+3)]
-    # rand_value = [ZR((myid+1)+4)]
 
-    # 这里测试我们的 values 有两个，secret 的多项式是 f_1(x) = 2x + 3 和 f_2(x) = 3x + 2 ，输入的 random values 的多项式是 g_1(x) = x + 4 和 g_2(x) = 2x + 1
-    values = [ZR(2*(myid+1)+3), ZR(3*(myid+1)+2)]
-    rand_values = [ZR((myid+1)+4), ZR(2*(myid+1)+1)]
+    values = [ZR(2*(myid+1)+3), ZR(3*(myid+1)+2), ZR(4*(myid+1)+5), ZR(5*(myid+1)+6)]
+    rand_values = [ZR((myid+1)+4), ZR(2*(myid+1)+1), ZR(3*(myid+1)+5), ZR(4*(myid+1)+6), ZR(5*(myid+1)+7), ZR(6*(myid+1)+8), ZR(7*(myid+1)+9), ZR(8*(myid+1)+10), ZR(9*(myid+1)+11), ZR(10*(myid+1)+12), ZR(11*(myid+1)+13), ZR(12*(myid+1)+14)]
+    print(f"myid: {myid}, values: {values}, rand_values: {rand_values}")
 
-
-    # 这里异步延迟的设置可能还没有考虑
     trans = Trans(public_keys, private_key, g, h, n, t, deg, myid, ctx.send, ctx.recv, pc, curve_params)
     trans_lists[myid] = trans
-    trans_tasks[myid] = asyncio.create_task(trans.run_trans(values, rand_values))
-    
+    trans_tasks[myid] = asyncio.create_task(trans.run_trans_log(values, rand_values))
 
-    # outputs = await gather_outputs(acss_list)
-    # print(f"outputs: {outputs}")
-    # shares = [output[2][0] for output in outputs]
 
 
 async def tutorial_1():
     # Create a test network of 4 nodes (no sockets, just asyncio tasks)
-    n, t = 4, 1
+    n, t = 16, 5
     
     program_runner = TaskProgramRunner(n, t, config)
     program_runner.add(prog)
-    # program_runner.join 这个函数设计的有问题，注释掉里面的代码程序部分函数不调用了，可能会影响到 aprep 协议的输出
     results = await program_runner.join()
-    print(f"results: {results}")
     return results
 
 

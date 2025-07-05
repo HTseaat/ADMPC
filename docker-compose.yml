@@ -1,13 +1,14 @@
 version: '3.4'
 
 services:
-  admpc:
+  htadkg_adkg:
   # 这里加了一个端口映射
     ports:
       - "7001:7001"
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: htadkg_adkg:latest
     cap_add:
       - NET_ADMIN
     volumes:

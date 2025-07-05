@@ -50,11 +50,9 @@ def gen_vector(t, n, ZR):
     return (vm.tolist())
 
 @mark.asyncio
-async def test_admpc(test_router, num, ths, curve):
-# async def test_admpc(test_router, num, ths, deg, curve):
+async def test_admpc(test_router, num, ths, deg, curve):
     t = int(ths)
-    deg = t
-    # deg = int(deg)
+    deg = int(deg)
     n = int(num)
 
     

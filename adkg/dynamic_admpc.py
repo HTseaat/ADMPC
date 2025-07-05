@@ -77,7 +77,7 @@ class ADMPC:
             self.acss.kill()
             self.acss_task.cancel()
         except Exception:
-            logging.info("ADKG task finished")
+            logging.info("ADMPC task finished")
         
 
     def __enter__(self):

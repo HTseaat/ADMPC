@@ -16,6 +16,7 @@
 extern crate pyo3;
 
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use pyo3::types::PyList;
 use pyo3::types::PyBool;
 use pyo3::types::PyBytes;
@@ -46,7 +47,8 @@ extern crate group;
 extern crate rand_core;
 extern crate rand_chacha;
 
-
+mod polycommit;          // 新模块
+use polycommit::*;       // 重新导出给 Python
 
 #[cfg(test)]
 pub mod tests;
@@ -415,6 +417,33 @@ impl PyG1 {
         let u8arr = unsafe{arr.align_to::<u8>().1};
         Ok(PyBytes::new(py, &u8arr))*/
     }
+
+    // #[staticmethod]
+    // pub fn deserialize_many_g1(data: &PyAny) -> PyResult<Vec<PyG1>> {
+    //     let u8arr: &[u8] = data.extract()?;
+    //     let n = u8arr.len() / 48;
+    //     if u8arr.len() % 48 != 0 {
+    //         return Err(pyo3::exceptions::PyValueError::new_err("Input length not divisible by 48"));
+    //     }
+    //     let mut out = Vec::with_capacity(n);
+    //     for i in 0..n {
+    //         let offset = i * 48;
+    //         let bytes: [u8; 48] = u8arr[offset..offset + 48]
+    //             .try_into()
+    //             .map_err(|_| PyErr::new::<exceptions::PyValueError, _>("Invalid byte slice"))?;
+    //         let compressed = G1Compressed(bytes);
+    //         let aff = compressed
+    //             .into_affine()
+    //             .map_err(|_| PyErr::new::<exceptions::PyValueError, _>("Failed to decompress G1"))?;
+    //         let g1 = G1::from(aff);
+    //         out.push(PyG1 {
+    //             g1,
+    //             pp: Vec::new(),
+    //             pplevel: 0,
+    //         });
+    //     }
+    //     Ok(out)
+    // }
     
     pub fn __setstate__(&mut self, list: &PyAny) -> PyResult<()>
     {
@@ -608,6 +637,56 @@ impl PyG1 {
         }
         
     }
+}
+
+/// Deserialize a byte slice (48 bytes / G1 point) into a Vec<PyG1>.
+#[pyfunction]
+pub fn deserialize_many_g1(data: &PyAny) -> PyResult<Vec<PyG1>> {
+    let u8arr: &[u8] = data.extract()?;
+    if u8arr.len() % 48 != 0 {
+        return Err(PyErr::new::<exceptions::ValueError, _>(
+            "Input length not divisible by 48",
+        ));
+    }
+    let n = u8arr.len() / 48;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let bytes: [u8; 48] = u8arr[i * 48..(i + 1) * 48]
+            .try_into()
+            .map_err(|_| PyErr::new::<exceptions::ValueError, _>("Invalid byte slice"))?;
+        let compressed = G1Compressed(bytes);
+        let aff = compressed
+            .into_affine()
+            .map_err(|_| PyErr::new::<exceptions::ValueError, _>("Failed to decompress G1"))?;
+        out.push(PyG1 {
+            g1: G1::from(aff),
+            pp: Vec::new(),
+            pplevel: 0,
+        });
+    }
+    Ok(out)
+}
+
+/// Serialize a Python iterable of `PyG1` into连续字节串（48 bytes/点，压缩 affine）
+#[pyfunction]
+pub fn serialize_many_g1(py: Python, objs: &PyAny) -> PyResult<Py<PyBytes>> {
+    // 确保是可迭代对象
+    let iter = objs.iter()?;
+    let mut bytes: Vec<u8> = Vec::new();
+
+    // 若能取到长度，提前 reserve
+    if let Ok(len) = objs.len() {
+        bytes.reserve(len * 48);
+    }
+
+    for item in iter {
+        let cell = item?.downcast::<PyCell<crate::PyG1>>()?;
+        let g1_aff = cell.borrow().g1.into_affine();
+        let compressed = g1_aff.into_compressed();
+        bytes.extend_from_slice(compressed.as_ref());
+    }
+
+    Ok(PyBytes::new(py, &bytes).into())
 }
 
 #[pyproto]
@@ -2873,6 +2952,7 @@ fn pair(a: &PyG1, b: &PyG2) -> PyResult<PyFq12> {
     })
 }
 
+
 #[derive(Clone)]
 enum preprocessable{
     PyG1,
@@ -3231,6 +3311,13 @@ fn pypairing(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(hashcurve25519gsbn))?;
     m.add_wrapped(wrap_pyfunction!(curve25519dotprod))?;
     m.add_wrapped(wrap_pyfunction!(curve25519multiexp))?;
+
+    m.add_wrapped(wrap_pyfunction!(deserialize_many_g1))?;
+    m.add_wrapped(wrap_pyfunction!(serialize_many_g1))?;   
+
+    // m.add_wrapped(wrap_pyfunction!(polycommit_commit, m)?)?;
+    crate::polycommit::register(py, m)?;
+    
     Ok(())
 }
 
