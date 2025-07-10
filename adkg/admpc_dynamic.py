@@ -17,6 +17,8 @@ from adkg.mpc import TaskProgramRunner
 from adkg.robust_rec import robust_reconstruct_admpc, Robust_Rec
 from adkg.trans import Trans, Trans_Pre, Trans_Foll
 from adkg.rand import Rand, Rand_Pre, Rand_Foll
+from adkg.bundle import Bundle, Bundle_Pre, Bundle_Foll
+
 from adkg.aprep import APREP, APREP_Pre, APREP_Foll
 import math
 
@@ -423,7 +425,8 @@ class ADMPC_Dynamic(ADMPC):
 
             # clients step 2: invoke Rand protocol to send random values to the next layer
             rand_pre_time = time.time()
-            r_num = 2 * w + 1
+            # r_num = 2 * w + 1
+            r_num = w
             if r_num > self.n - self.t: 
                 rounds = math.ceil(r_num / (self.n - self.t))
             else: 
@@ -432,11 +435,11 @@ class ADMPC_Dynamic(ADMPC):
             randtag = ADMPCMsgType.GENRAND + str(self.layer_ID+1)
             randsend, randrecv = self.get_send(randtag), self.subscribe_recv(randtag)
 
-            rand_pre = Rand_Pre(self.public_keys, self.private_key, 
+            bundle_pre = Bundle_Pre(self.public_keys, self.private_key, 
                                 self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                 randsend, randrecv, self.pc, self.curve_params, self.matrix, mpc_instance=self)
-            rand_pre_task = asyncio.create_task(rand_pre.run_rand(r_num, rounds))
-            await rand_pre_task
+            bundle_pre_task = asyncio.create_task(bundle_pre.run_bundle(r_num, rounds))
+            await bundle_pre_task
             rand_pre_time = time.time() - rand_pre_time
             print(f"layer ID: {self.layer_ID} rand_pre_time: {rand_pre_time}")
 
@@ -494,15 +497,16 @@ class ADMPC_Dynamic(ADMPC):
             rand_foll_time = time.time()
             randtag = ADMPCMsgType.GENRAND + str(self.layer_ID)
             randsend, randrecv = self.get_send(randtag), self.subscribe_recv(randtag)
-            rand_foll = Rand_Foll(self.public_keys, self.private_key, 
+            bundle_foll = Bundle_Foll(self.public_keys, self.private_key, 
                                   self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                   randsend, randrecv, self.pc, self.curve_params, self.matrix, mpc_instance=self)
-            r_num = 2 * w + 1 
+            # r_num = 2 * w + 1 
+            r_num = w
             if r_num > self.n - self.t: 
                 rounds = math.ceil(r_num / (self.n - self.t))
             else: 
                 rounds = 1
-            rand_shares = await rand_foll.run_rand(r_num, rounds)
+            rand_shares = await bundle_foll.run_bundle(r_num, rounds)
             rand_foll_time = time.time() - rand_foll_time
             print(f"layer ID: {self.layer_ID} rand_foll_time: {rand_foll_time}")
             
@@ -548,7 +552,8 @@ class ADMPC_Dynamic(ADMPC):
                     print(f"layer ID: {self.layer_ID} trans_pre_time: {trans_pre_time}")
                 else: 
                     rand_pre_time = time.time()
-                    r_num = 2 * w + 1 
+                    # r_num = 2 * w + 1 
+                    r_num = w
                     if r_num > self.n - self.t: 
                         rounds = math.ceil(r_num / (self.n - self.t))
                     else: 
@@ -557,10 +562,10 @@ class ADMPC_Dynamic(ADMPC):
                     randtag = ADMPCMsgType.GENRAND + str(self.layer_ID+1)
                     randsend, randrecv = self.get_send(randtag), self.subscribe_recv(randtag)
 
-                    rand_pre = Rand_Pre(self.public_keys, self.private_key, 
+                    bundle_pre = Bundle_Pre(self.public_keys, self.private_key, 
                                         self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                         randsend, randrecv, self.pc, self.curve_params, self.matrix, mpc_instance=self)
-                    rand_pre_task = asyncio.create_task(rand_pre.run_rand(r_num, rounds))
+                    rand_pre_task = asyncio.create_task(bundle_pre.run_bundle(r_num, rounds))
                     rand_pre_time = time.time() - rand_pre_time
                     print(f"layer ID: {self.layer_ID} rand_pre_time: {rand_pre_time}")
 
@@ -628,16 +633,17 @@ class ADMPC_Dynamic(ADMPC):
                 rand_foll_time = time.time()
                 randtag = ADMPCMsgType.GENRAND + str(self.layer_ID)
                 randsend, randrecv = self.get_send(randtag), self.subscribe_recv(randtag)
-                rand_foll = Rand_Foll(self.public_keys, self.private_key, 
+                bundle_foll = Bundle_Foll(self.public_keys, self.private_key, 
                                     self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                     randsend, randrecv, self.pc, self.curve_params, self.matrix, mpc_instance=self)
 
-                r_num = 2 * w + 1 
+                # r_num = 2 * w + 1 
+                r_num = w
                 if r_num > self.n - self.t: 
                     rounds = math.ceil(r_num / (self.n - self.t))
                 else: 
                     rounds = 1
-                rand_shares = await rand_foll.run_rand(r_num, rounds)
+                rand_shares = await bundle_foll.run_bundle(r_num, rounds)
                 rand_foll_time = time.time() - rand_foll_time
                 print(f"layer ID: {self.layer_ID} rand_foll_time: {rand_foll_time}")
                 
@@ -686,7 +692,8 @@ class ADMPC_Dynamic(ADMPC):
                 else: 
 
                     rand_pre_time = time.time()
-                    r_num = 2 * w + 1 
+                    # r_num = 2 * w + 1 
+                    r_num = w
                     if r_num > self.n - self.t: 
                         rounds = math.ceil(r_num / (self.n - self.t))
                     else: 
@@ -695,10 +702,10 @@ class ADMPC_Dynamic(ADMPC):
                     randtag = ADMPCMsgType.GENRAND + str(self.layer_ID+1)
                     randsend, randrecv = self.get_send(randtag), self.subscribe_recv(randtag)
 
-                    rand_pre = Rand_Pre(self.public_keys, self.private_key, 
+                    bundle_pre = Bundle_Pre(self.public_keys, self.private_key, 
                                         self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                         randsend, randrecv, self.pc, self.curve_params, self.matrix, mpc_instance=self)
-                    rand_pre_task = asyncio.create_task(rand_pre.run_rand(r_num, rounds))
+                    bundle_pre_task = asyncio.create_task(bundle_pre.run_bundle(r_num, rounds))
                     rand_pre_time = time.time() - rand_pre_time
                     print(f"layer ID: {self.layer_ID} rand_pre_time: {rand_pre_time}")
 

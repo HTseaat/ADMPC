@@ -18,7 +18,8 @@ import os
 _VERIFY_POOL = ThreadPoolExecutor(max_workers=os.cpu_count())
 
 from pypairing import ZR, G1, blsmultiexp as multiexp, dotprod
-from pypairing.pypairing import deserialize_many_g1, serialize_many_g1, polycommit_commit, polycommit_commit_batch, polycommit_prove_double_batch_inner_product_opt, polycommit_verify_double_batch_inner_product_one_known_but_differenter, polycommit_commit_transfer_batch
+from pypairing.pypairing import deserialize_many_g1, serialize_many_g1, polycommit_commit, polycommit_commit_batch, polycommit_prove_double_batch_inner_product_opt, polycommit_verify_double_batch_inner_product_one_known_but_differenter, polycommit_commit_transfer_batch, polycommit_prove_sigma, polycommit_verify_sigma
+
 
 
 import logging
@@ -195,6 +196,13 @@ class ACSS:
         ok = self.verify_proposal_log(dealer_id, dispersal_msg, commits, shared, ephkey, rand_num)
         return ok
 
+    def _decode_and_verify_bundle_log_sync(self, dealer_id: int, m_bytes: bytes, rand_num: int) -> bool:
+        """Sync helper used by run_in_executor for LOG variant."""
+        dispersal_msg, commits, shared, ephkey, proof_tuple, W_list = self.decode_proposal_bundle_log(m_bytes, rand_num)
+
+        ok = self.verify_proposal_bundle_log(dealer_id, dispersal_msg, commits, shared, ephkey, rand_num, proof_tuple, W_list)
+        return ok
+
     def _decode_and_verify_trans_log_sync(self, dealer_id: int, m_bytes: bytes, len_values: int) -> bool:
         """Sync helper used by run_in_executor for TRANS‑LOG variant."""
         decode_time = time.time()
@@ -270,6 +278,110 @@ class ACSS:
         ephkey = self.sr.deserialize_g(proposal[-ephkey_size:])
 
         return ctx_bytes, commits_all, shared, ephkey
+
+    def decode_proposal_bundle_log(self, proposal: bytes, poly_num: int):
+        """
+        Layout (new):
+            commitments (poly_num × g_size)
+          + shared
+          + ciphertext_block (n equal fragments)
+          + eph_public_key
+        Returns
+        -------
+        (ctx_bytes, commits, shared, ephkey)
+        """
+        g_size = self.sr.g_size
+        f_size = self.sr.f_size
+
+        # ---- 1) commitments -------------------------------------------------
+        com_size = g_size * poly_num
+        t0 = time.time()
+        # commits_all = self.sr.deserialize_gs(proposal[0:com_size])
+        t0 = time.time() - t0
+
+        # Use the Rust‑side fast deserializer (Vec<PyG1>) instead of Python fallback
+        deserialize_many_g1_time = time.time()
+        commits_all = deserialize_many_g1(bytes(proposal[0:com_size]))
+
+        der_time = time.time()
+        # ---- 2) shared ------------------------------------------------------
+        idx = com_size
+
+        # roothash
+        rlen = int.from_bytes(proposal[idx:idx + 2], "big"); idx += 2
+        roothash = proposal[idx:idx + rlen]; idx += rlen
+
+        # t, mu
+        t_mu = self.sr.deserialize_fs(proposal[idx:idx + 2 * f_size])
+        t, mu = int(t_mu[0]), t_mu[1]
+        idx += 2 * f_size
+
+        # S
+        S = self.sr.deserialize_g(proposal[idx:idx + g_size]); idx += g_size
+
+        # Use the Rust‑side fast deserializer (Vec<PyG1>) instead of Python fallback
+        Ds = deserialize_many_g1(bytes(proposal[idx: idx + poly_num * g_size]))
+        idx += poly_num * g_size
+
+        shared = [roothash, t, S, Ds, mu]
+
+        # ---- 2.5) Sigma proof -----------------------------------------------
+        # number of proof elements per list (half of Ds)
+        mid = len(Ds) // 2
+        t_plus_1 = len(self.gs)
+
+        # T1, T2, T3, W: mid G1
+        T1_list = self.sr.deserialize_gs(proposal[idx: idx + mid * g_size])
+        idx += mid * g_size
+        T2_list = self.sr.deserialize_gs(proposal[idx: idx + mid * g_size])
+        idx += mid * g_size
+        T3_list = self.sr.deserialize_gs(proposal[idx: idx + mid * g_size])
+        idx += mid * g_size
+        W_list  = self.sr.deserialize_gs(proposal[idx: idx + mid * g_size])
+        idx += mid * g_size
+        # z_r_list: mid  Fr
+        z_r_list = self.sr.deserialize_fs(proposal[idx: idx + mid * f_size])
+        idx += mid * f_size
+        # z_coeffs: mid × (t+1)
+        zc_list = []
+        for _ in range(mid):
+            row = self.sr.deserialize_fs(proposal[idx: idx + (t_plus_1) * f_size])
+            idx += (t_plus_1) * f_size
+            zc_list.append(row)
+        # z_hatcoeffs: mid × (t+1)
+        zh_list = []
+        for _ in range(mid):
+            row = self.sr.deserialize_fs(proposal[idx: idx + (t_plus_1) * f_size])
+            idx += (t_plus_1) * f_size
+            zh_list.append(row)
+        # e: single Fr
+        e_list = self.sr.deserialize_fs(proposal[idx: idx + f_size])
+        e = e_list[0]
+        idx += f_size
+
+        # ---- 3) ciphertext block -------------------------------------------
+        ephkey_size = g_size
+        ciphertext_block = proposal[idx:-ephkey_size]
+
+        per_cipher_len = len(ciphertext_block) // self.n
+        ctx_start = per_cipher_len * self.my_id
+        ctx_end = ctx_start + per_cipher_len
+        ctx_bytes = ciphertext_block[ctx_start:ctx_end]
+
+        # ---- 4) dealer’s ephemeral public key -------------------------------
+        ephkey = self.sr.deserialize_g(proposal[-ephkey_size:])
+
+        proof_tuple = (
+            T1_list,
+            T2_list,
+            T3_list,
+            z_r_list,
+            zc_list,
+            zh_list,
+            e
+        )
+        # 返回 ctx_bytes, 承诺, shared, ephkey, proof_tuple, W_list
+        return ctx_bytes, commits_all, shared, ephkey, proof_tuple, W_list
 
     def decode_proposal_trans_log(self, proposal, com_num):
         
@@ -433,6 +545,70 @@ class ACSS:
         ephkey = self.sr.deserialize_g(proposal[com_size+ctx_size:])
         
         return (ctx_bytes, commits, ephkey)
+
+    def verify_proposal_bundle_log(self, dealer_id, dispersal_msg, commits, shared, ephkey, poly_num, proof_tuple, W_list):
+        """
+        Decrypt, parse <phis | witness>, then batch-verify with `shared`.
+        """
+        start_time = time.time()
+        # the current node does not have a private key, so it cannot verify
+        if self.private_key is None:
+            return True
+
+        mid = len(commits) // 2
+        C_list    = commits[:mid]
+        Chat_list = commits[mid:]
+        verify_sigma_ok = polycommit_verify_sigma(
+            C_list,
+            Chat_list,
+            W_list,
+            proof_tuple,
+            self.poly_commit_log.gs,
+            self.poly_commit_log.h
+        )
+        if not verify_sigma_ok:
+            self.acss_status[dealer_id] = False
+            return False
+
+        decrypt_time = time.time()
+        shared_key = ephkey ** self.private_key
+        try:
+            plaintext = SymmetricCrypto.decrypt(shared_key.__getstate__(), dispersal_msg)
+        except ValueError as e:
+            logger.warn(f"Implicate due to failure in decrypting: {e}")
+            self.acss_status[dealer_id] = False
+            return False
+        decrypt_time = time.time() - decrypt_time
+
+        # --- split phis / witness ------------------------------------------
+        f_size = self.sr.f_size
+        phis_bytes_len = poly_num * f_size
+        phis_time = time.time()
+        phis = self.sr.deserialize_fs(plaintext[:phis_bytes_len])
+        phis_time = time.time() - phis_time
+        witness_blob = plaintext[phis_bytes_len:]
+        wit_time = time.time()
+        witness = self.deserialize_witness(witness_blob, poly_num)
+        wit_time = time.time() - wit_time
+
+        
+        if dealer_id > 2 * self.t:
+            self.acss_status[dealer_id] = True
+            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key]
+            return True
+        
+
+        i = self.my_id + 1
+        verify_time = time.time()
+        ok = self.poly_commit_log.batch_verify_eval_rs(
+            commits, i, phis, shared, witness, self.t
+        )
+        verify_time = time.time() - verify_time
+
+        self.acss_status[dealer_id] = ok
+        if ok:
+            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key]
+        return ok
 
     def verify_proposal_log(self, dealer_id, dispersal_msg, commits, shared, ephkey, poly_num):
         """
@@ -1117,6 +1293,98 @@ class ACSS:
 
         return bytes(datab)
     
+    def _get_dealer_msg_bundle(self, values, n):
+        # Sample B random degree-(t) polynomials of form φ(·)
+        # such that each φ_i(0) = si and φ_i(j) is Pj’s share of si
+        # The same as B (batch_size)
+        """
+        while len(values) % (batch_size) != 0:
+            values.append(0)
+        """
+
+        self.rand_num = len(values)
+
+        phi_test = [None] * self.rand_num
+        r_shared = self.field.rand()
+        commitments_test = [None] * self.rand_num
+        for k in range(self.rand_num):
+            phi_test[k] = self.poly.random(self.t, values[k])
+
+        batch_coeffs = [phi.coeffs for phi in phi_test]
+        batch_comms = polycommit_commit_batch(
+            batch_coeffs,
+            r_shared,
+            self.poly_commit_log.gs,
+            self.poly_commit_log.h
+        )
+
+        shared_te2, witnesses_te2 = self.poly_commit_log.double_batch_create_witness_rs(phi_test, r_shared, n)
+
+        mid = len(batch_coeffs) // 2
+        coeffs_list = batch_coeffs[:mid]
+        hat_coeffs_list = batch_coeffs[mid:]
+        # proof：T1_list, T2_list, T3_list, z_r_list, z_coeffs, z_hatcoeffs, e 
+        T1_list, T2_list, T3_list, W_list, z_r_list, z_coeffs, z_hatcoeffs, e = polycommit_prove_sigma(
+            coeffs_list,
+            hat_coeffs_list,
+            r_shared,
+            self.poly_commit_log.gs,
+            self.poly_commit_log.h
+        )
+        
+        ephemeral_secret_key = self.field.rand()
+        ephemeral_public_key = self.g ** ephemeral_secret_key
+        dispersal_msg_list = bytearray()
+
+
+        for i in range(n):
+            shared_key = self.public_keys[i] ** ephemeral_secret_key
+            phis_i = [phi_test[k](i + 1) for k in range(self.rand_num)]
+
+            wits_te2_i = witnesses_te2[i]
+
+            payload_te2 = self.sr.serialize_fs(phis_i) + self.serialize_witness(wits_te2_i)
+
+
+            ciphertext = SymmetricCrypto.encrypt(
+                shared_key.__getstate__(),
+                payload_te2
+            )
+            dispersal_msg_list.extend(ciphertext)
+            
+
+        all_commits_list = []
+        for k in range(self.rand_num):
+            all_commits_list.append(batch_comms[k])
+        
+        datab = self.sr.serialize_gs(all_commits_list)
+
+        serialized_shared_te2 = self.serialize_shared(shared_te2)
+        datab.extend(serialized_shared_te2)
+
+        # ser Sigma 
+        # T1, T2, T3, W：G1 
+        datab.extend(self.sr.serialize_gs(T1_list))
+        datab.extend(self.sr.serialize_gs(T2_list))
+        datab.extend(self.sr.serialize_gs(T3_list))
+        datab.extend(self.sr.serialize_gs(W_list))
+        # z_r_list：Fr 
+        datab.extend(self.sr.serialize_fs(z_r_list))
+        # z_coeffs 和 z_hatcoeffs：
+        for row in z_coeffs:
+            datab.extend(self.sr.serialize_fs(row))
+        for row in z_hatcoeffs:
+            datab.extend(self.sr.serialize_fs(row))
+        # e：single Fr
+        datab.extend(self.sr.serialize_fs([e]))
+
+        datab.extend(dispersal_msg_list)
+
+        
+        datab.extend(self.sr.serialize_g(ephemeral_public_key))
+
+        return bytes(datab)
+    
     def serialize_shared(self, shared):
         """
         shared = [roothash, t, S, Ds, mu]
@@ -1677,6 +1945,73 @@ class ACSS:
         self.tagvars[acsstag] = {}
         del self.tagvars[acsstag]
 
+    #@profile
+    async def avss_bundle(self, avss_id, values=None, dealer_id=None):
+        """
+        An acss with share recovery
+        """
+        # If `values` is passed then the node is a 'Sender'
+        # `dealer_id` must be equal to `self.my_id`
+        if values is not None:
+            if dealer_id is None:
+                dealer_id = self.my_id
+            assert dealer_id == self.my_id, "Only dealer can share values."
+        # If `values` is not passed then the node is a 'Recipient'
+        # Verify that the `dealer_id` is not the same as `self.my_id`
+        elif dealer_id is not None:
+            assert dealer_id != self.my_id
+        assert type(avss_id) is int
+
+        n = self.n
+        rbctag = f"{dealer_id}-{avss_id}-B-RBC"
+        acsstag = f"{dealer_id}-{avss_id}-B-AVSS"
+
+        self.tagvars[acsstag] = {}
+        self.tagvars[acsstag]['tasks'] = []
+
+        broadcast_msg = None
+        if self.my_id == dealer_id:
+            
+            broadcast_msg = self._get_dealer_msg_bundle(values, n)
+
+        send, recv = self.get_send(rbctag), self.subscribe_recv(rbctag)
+        logger.debug("[%d] Starting reliable broadcast", self.my_id)
+
+        async def predicate(_m):
+
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                _VERIFY_POOL,
+                self._decode_and_verify_bundle_log_sync,
+                dealer_id,
+                _m,
+                self.rand_num,
+            )
+        
+        output = asyncio.Queue()
+        asyncio.create_task(
+        optqrbc(
+            rbctag,
+            self.my_id,
+            self.n,
+            self.t,
+            dealer_id,
+            predicate,
+            broadcast_msg,
+            output.put_nowait,
+            send,
+            recv,
+        ))
+        rbc_msg = await output.get()
+
+
+        await self._process_avss_msg_log(avss_id, dealer_id, rbc_msg)
+        
+        for task in self.tagvars[acsstag]['tasks']:
+            task.cancel()
+        self.tagvars[acsstag] = {}
+        del self.tagvars[acsstag]
+
     async def avss_trans_log(self, avss_id, len_values, values=None, dealer_id=None):
         """
         An acss with share recovery
@@ -1968,6 +2303,58 @@ class ACSS_Pre(ACSS):
         async def predicate(_m):
             dispersal_msg, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey = self.decode_proposal_trans_log(_m, self.len_values)
             return self.verify_proposal_trans_log(dealer_id, dispersal_msg, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey, self.len_values)
+        
+        output = asyncio.Queue()
+
+        my_mpc_instance = self.mpc_instance
+        admpc_control_instance = self.mpc_instance.admpc_control_instance
+
+        member_list = [(self.mpc_instance.layer_ID) * self.n + self.my_id]
+        for i in range(self.n): 
+            member_list.append(n * (self.mpc_instance.layer_ID + 1) + i)
+        asyncio.create_task(
+        optqrbc_dynamic(
+            rbctag,
+            self.my_id,
+            self.n+1,
+            self.t,
+            self.my_id,
+            predicate,
+            broadcast_msg,
+            output.put_nowait,
+            send,
+            recv,
+            member_list
+        ))
+
+    async def avss_bundle(self, avss_id, values=None, dealer_id=None):
+        # If `values` is passed then the node is a 'Sender'
+        # `dealer_id` must be equal to `self.my_id`
+        if values is not None:
+            if dealer_id is None:
+                dealer_id = self.my_id
+            assert dealer_id == self.my_id, "Only dealer can share values."
+        # If `values` is not passed then the node is a 'Recipient'
+        # Verify that the `dealer_id` is not the same as `self.my_id`
+        elif dealer_id is not None:
+            assert dealer_id != self.my_id
+        assert type(avss_id) is int
+
+        n = self.n
+        rbctag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID + 1}-B-RBC"
+        acsstag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID + 1}-B-AVSS"
+
+        broadcast_msg = None
+        if self.my_id == dealer_id:
+            
+            broadcast_msg = self._get_dealer_msg_bundle(values, n)
+
+        send, recv = self.get_send(rbctag), self.subscribe_recv(rbctag)
+        logger.debug("[%d] Starting reliable broadcast", self.my_id)
+
+        async def predicate(_m):
+            dispersal_msg, commits, shared, ephkey = self.decode_proposal_bundle_log(_m, self.rand_num)
+            return self.verify_proposal_bundle_log(dealer_id, dispersal_msg, commits, shared, ephkey, self.rand_num)
         
         output = asyncio.Queue()
 
@@ -2353,6 +2740,79 @@ class ACSS_Foll(ACSS):
         (dealer, _, shares, commitments, omega, gamma, masked) = await self._process_avss_msg_dynamic_trans(avss_id, dealer_id, rbc_msg)
         return (dealer, _, shares, commitments, omega, gamma, masked)
     
+    async def avss_bundle(self, avss_id, dealer_id, rounds):
+        if dealer_id is None:
+            dealer_id = self.my_id
+
+        admpc_control_instance = self.mpc_instance.admpc_control_instance
+        my_mpc_instance = self.mpc_instance
+
+        self.rand_num = rounds
+        async def predicate(_m):
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                _VERIFY_POOL,
+                self._decode_and_verify_bundle_log_sync,
+                dealer_id,
+                _m,
+                self.rand_num,
+            )
+
+        rbctag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID}-B-RBC"
+        acsstag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID}-B-AVSS"
+
+        self.tagvars[acsstag] = {}
+        self.tagvars[acsstag]['tasks'] = []
+
+        output = asyncio.Queue()
+        broadcast_msg = None
+        
+        send, recv = self.get_send(rbctag), self.subscribe_recv(rbctag)
+
+
+        member_list = [(self.mpc_instance.layer_ID - 1) * self.n + dealer_id]
+        for i in range(self.n): 
+            member_list.append(self.n * (self.mpc_instance.layer_ID) + i)
+        if self.my_id < dealer_id: 
+            asyncio.create_task(
+            optqrbc_dynamic(
+                rbctag,
+                self.my_id,
+                self.n+1,
+                self.t,
+                dealer_id,
+                predicate,
+                broadcast_msg,
+                output.put_nowait,
+                send,
+                recv,
+                member_list
+            ))
+        else: 
+            asyncio.create_task(
+            optqrbc_dynamic(
+                rbctag,
+                self.my_id+1,
+                self.n+1,
+                self.t,
+                dealer_id,
+                predicate,
+                broadcast_msg,
+                output.put_nowait,
+                send,
+                recv,
+                member_list
+            ))
+
+        acss_rbc_time = time.time()
+        rbc_msg = await output.get()
+        acss_rbc_time = time.time() - acss_rbc_time
+
+        # avss processing
+        acss_process_time = time.time()
+        (dealer, _, shares, commitments) = await self._process_avss_msg_dynamic(avss_id, dealer_id, rbc_msg)
+        acss_process_time = time.time() - acss_process_time
+        return (dealer, _, shares, commitments)
     
     async def avss(self, avss_id, dealer_id, rounds):
         if dealer_id is None:

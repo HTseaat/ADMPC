@@ -221,9 +221,7 @@ class PolyCommitLog:
         elapsed_batch1 = time.time() - start_time_batch1
 
         core_proof, tail_proof = iproofs[0]
-        # print(f"core_proof: {core_proof} len core_proof: {len(core_proof)}")
-        # print(f"tail_proof: {tail_proof} len tail_proof: {len(tail_proof)}")
-        # Decode tail_proof: each element is [root_bytes, (branch_list, idx)]
+
         decoded_tail_proof = []
         for entry in tail_proof:
             root_bytes = entry[0]
@@ -264,20 +262,10 @@ class PolyCommitLog:
         print(f"Direct prove execution time: {elapsed_batch1:.6f}s, polycommit execution time: {elapsed_batch2:.6f}s, opt execution time: {start_time_batch3:.6f}s")
 
         core_iproof_te_0, tail_iproof_te_0 = iproofs_te[0]
-        # print(f"core_iproof_te_0: {core_iproof_te_0} len core_iproof_te_0: {len(core_iproof_te_0)}")
-        # print(f"tail_iproof_te_0: {tail_iproof_te_0} len tail_iproof_te_0: {len(tail_iproof_te_0)}")
-        # print(f"iproofs_te[1]: {iproofs_te[0]} len iproofs_te[1]: {len(iproofs_te[1])}")
+
 
         core_iproof_te3_0, tail_iproof_te3_0 = iproofs_te3[0]
-        # print(f"core_iproof_te3_0: {core_iproof_te3_0} len core_iproof_te3_0: {len(core_iproof_te3_0)}")
-        # print(f"tail_iproof_te3_0: {tail_iproof_te3_0} len tail_iproof_te3_0: {len(tail_iproof_te3_0)}")
-        # Decode tail_iproof_te3_0 into integer lists for root, branches, and idx
-        # decoded_tail_iproof_te3_0 = []
-        # for root_bytes, branches_bytes, idx in tail_iproof_te3_0:
-        #     decoded_root = list(root_bytes)
-        #     decoded_branches = [list(br) for br in branches_bytes]
-        #     decoded_tail_iproof_te3_0.append((decoded_root, decoded_branches, idx))
-        # print(f"decoded_tail_iproof_te3_0: {decoded_tail_iproof_te3_0}")
+
 
         core_iproof_te, tail_iproof_te = iproofs_te3[0]
         start_time_verify = time.time()
@@ -289,29 +277,9 @@ class PolyCommitLog:
         elapsed_verify = time.time() - start_time_verify
 
         
-
-        # print(f"len iproofs_te: {len(iproofs_te)} len iproofs: {len(iproofs)}")
-        # print(f"len core_proof: {len(core_proof)} len core_iproof_te: {len(core_iproof_te)}")
-        # print(f"len tail_proof: {len(tail_proof)} len tail_iproof_te: {len(tail_iproof_te)}")
-        # print(f"tail_proof: {tail_proof}")
-        # print(f"tail_iproof_te: {tail_iproof_te}")
-        
         # --- Unified print ---
         print(f"verify_double_batch_inner_product_one_known_but_differenter ok: {ok_direct}, execution time: {elapsed_verify_direct:.6f}s")
         print(f"polycommit_verify_double_batch_inner_product_one_known ok: {ok}, execution time: {elapsed_verify:.6f}s")
-
-        
-        
-        
-        # core_proof_te, tail_proof_te = iproofs_te[0]
-
-        # print(f"polycommit_prove_double_batch_inner_product_one_known core_proof_te: {core_proof_te}")        
-        # print(f"polycommit_prove_double_batch_inner_product_one_known tail_proof_te: {tail_proof_te}")      
-
-        # core_proof, tail_proof = iproofs[0]
-
-        # print(f"core_proof: {core_proof}")
-        # print(f"tail_proof: {tail_proof}")
 
         comms_test, t_hats_test = polycommit_compute_comms_t_hats(d_vecs, self.y_vecs, self.gs)
         # Compare commitments and t_hats results
@@ -325,11 +293,6 @@ class PolyCommitLog:
         te1, te2, te3 = polycommit_prove_inner_product_one_known_precomp(
             d_vecs[0], self.y_vecs[0], comms_test[0], t_hats_test[0][0], crs=[self.gs, self.u]
         )
-
-        # print(f"te1: {te1}, te2: {te2}, te3: {te3}")
-
-            
-        
 
 
         # ------- 广播一次即可的公共部分 -------

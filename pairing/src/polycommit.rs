@@ -164,6 +164,356 @@ pub fn polycommit_commit_batch(
     Ok(out)
 }
 
+/// Σ-协议 (Fiat–Shamir 非交互化) 的 prover：  
+/// 给定 witness ⟨coeffs_list, hat_coeffs_list, r⟩，  
+/// 生成 (T1,T2,T3, z-向量, e) 作为证明。
+///
+/// 返回值：
+/// (T1_list, T2_list, T3_list, z_r_list, z_coeffs, z_hatcoeffs, e)
+///
+/// * T*-list        -> Vec\<PyG1>                 长度 = m  
+/// * z_r_list       -> Vec\<PyFr>                 长度 = m  
+/// * z_coeffs       -> Vec\<Vec\<PyFr>>           形状 = m × (t+1)  
+/// * z_hatcoeffs    -> Vec\<Vec\<PyFr>>           同上  
+/// * e              -> PyFr                       单个挑战
+#[pyfunction]
+pub fn polycommit_prove_sigma(
+    coeffs_list: &PyAny,
+    hat_coeffs_list: &PyAny,
+    r: &PyAny,
+    gs: &PyAny,
+    h: &PyCell<PyG1>,
+) -> PyResult<(
+    Vec<PyG1>, Vec<PyG1>, Vec<PyG1>, Vec<PyG1>,  // T1, T2, T3, W
+    Vec<PyFr>,                                   // z_r
+    Vec<Vec<PyFr>>, Vec<Vec<PyFr>>,              // z_coeffs, z_hatcoeffs
+    PyFr                                         // e
+)> {
+    // ---------- 0. 基本解析 ----------
+    let coeffs_outer = PySequence::try_from(coeffs_list)?;
+    let hats_outer   = PySequence::try_from(hat_coeffs_list)?;
+    let m = coeffs_outer.len()?;                         // 多项式个数
+    if m == 0 || hats_outer.len()? != m {
+        return Err(PyErr::new::<pyo3::exceptions::ValueError,_>(
+            "coeffs_list / hat_coeffs_list 维度不一致"));
+    }
+    let m = m as usize;
+    let t_plus_1 = PySequence::try_from(coeffs_outer.get_item(0)?)?.len()? as usize;
+
+    let g_seq = PySequence::try_from(gs)?;
+    if g_seq.len()? as usize != t_plus_1 {
+        return Err(PyErr::new::<pyo3::exceptions::ValueError,_>("len(gs) != polynomial length"));
+    }
+
+    // ---------- 1. 提取生成元 & witness ----------
+    let raw_g: Vec<G1> = (0..t_plus_1)
+        .map(|k| -> PyResult<G1> {
+            let cell = g_seq.get_item(k as isize)?;
+            let pyg_cell = cell.downcast::<PyCell<PyG1>>()?;
+            Ok(pyg_cell.borrow().g1.clone())
+        })
+        .collect::<PyResult<Vec<G1>>>()?;
+    let raw_h: G1 = h.borrow().g1.clone();
+    let r_fr:  Fr = r.downcast::<PyCell<PyFr>>()?.borrow().fr;
+
+    // 把系数搬进 Vec<Vec<Fr>>
+    let mut a: Vec<Vec<Fr>> = Vec::with_capacity(m);
+    let mut b: Vec<Vec<Fr>> = Vec::with_capacity(m);
+    for i in 0..m {
+        let a_seq = PySequence::try_from(coeffs_outer.get_item(i as isize)?)?;
+        let b_seq = PySequence::try_from(hats_outer.get_item(i as isize)?)?;
+        let mut a_row = Vec::with_capacity(t_plus_1);
+        let mut b_row = Vec::with_capacity(t_plus_1);
+        for k in 0..t_plus_1 {
+            a_row.push(a_seq.get_item(k as isize)?
+                             .downcast::<PyCell<PyFr>>()?.borrow().fr);
+            b_row.push(b_seq.get_item(k as isize)?
+                             .downcast::<PyCell<PyFr>>()?.borrow().fr);
+        }
+        a.push(a_row);  b.push(b_row);
+    }
+
+    // // ---------- 2. 计算真实承诺 C, Ĉ, W ----------
+    // let mut C_raw  = Vec::with_capacity(m);
+    // let mut Ch_raw = Vec::with_capacity(m);
+    // let mut W_raw  = Vec::with_capacity(m);
+    // for i in 0..m {
+    //     // C_i
+    //     let mut ci = G1::zero();
+    //     for k in 0..t_plus_1 {
+    //         let mut term = raw_g[k].clone();
+    //         term.mul_assign(a[i][k]);
+    //         ci.add_assign(&term);
+    //     }
+    //     let mut h_r = raw_h.clone(); h_r.mul_assign(r_fr);
+    //     ci.add_assign(&h_r);
+    //     C_raw.push(ci);
+
+    //     // Ĉ_i
+    //     let mut chi = G1::zero();
+    //     for k in 0..t_plus_1 {
+    //         let mut term = raw_g[k].clone();
+    //         term.mul_assign(b[i][k]);
+    //         chi.add_assign(&term);
+    //     }
+    //     chi.add_assign(&h_r);              // 同一个 r
+    //     Ch_raw.push(chi);
+
+    //     // W_i
+    //     let mut wi = raw_g[0].clone();
+    //     wi.mul_assign(a[i][0]);
+    //     let mut h_s = raw_h.clone(); h_s.mul_assign(b[i][0]);
+    //     wi.add_assign(&h_s);
+    //     W_raw.push(wi);
+    // }
+
+    // ---------- 3. 随机 α,β,ρ 并构造 T1,T2,T3 ----------
+    // Hard-code all randomness to a fixed field element
+    let fixed_val = Fr::from_str("42").unwrap();
+    let mut alpha = vec![vec![fixed_val; t_plus_1]; m];
+    let mut beta  = vec![vec![fixed_val; t_plus_1]; m];
+    // one shared ρ for the *single* shared r
+    let rho = fixed_val;
+
+    let mut T1_raw = Vec::with_capacity(m);
+    let mut T2_raw = Vec::with_capacity(m);
+    let mut T3_raw = Vec::with_capacity(m);
+    let mut W_raw = Vec::with_capacity(m);
+
+    for i in 0..m {
+        // // 随机
+        // for k in 0..t_plus_1 {
+        //     alpha[i][k] = Fr::random(&mut rng);
+        //     beta [i][k] = Fr::random(&mut rng);
+        // }
+        // T1_i
+        let mut t1 = G1::zero();
+        for k in 0..t_plus_1 {
+            let mut term = raw_g[k].clone();
+            term.mul_assign(alpha[i][k]);
+            t1.add_assign(&term);
+        }
+        let mut h_rho = raw_h.clone(); h_rho.mul_assign(rho);
+        t1.add_assign(&h_rho);
+        T1_raw.push(t1);
+
+        // T2_i
+        let mut t2 = G1::zero();
+        for k in 0..t_plus_1 {
+            let mut term = raw_g[k].clone();
+            term.mul_assign(beta[i][k]);
+            t2.add_assign(&term);
+        }
+        t2.add_assign(&h_rho);
+        T2_raw.push(t2);
+
+        // T3_i
+        let mut t3 = raw_g[0].clone();
+        t3.mul_assign(alpha[i][0]);
+        let mut h_b0 = raw_h.clone(); h_b0.mul_assign(beta[i][0]);
+        t3.add_assign(&h_b0);
+        T3_raw.push(t3);
+
+        // W_i
+        let mut wi = raw_g[0].clone();
+        wi.mul_assign(a[i][0]);
+        let mut h_s = raw_h.clone();
+        h_s.mul_assign(b[i][0]);
+        wi.add_assign(&h_s);
+        W_raw.push(wi);
+    }
+
+    // ---------- 4. Fiat–Shamir 生成挑战 e ----------
+    let e = Fr::one();                // hard‑coded challenge
+    let e_py = PyFr { fr: e };
+
+    // ---------- 5. 计算响应 z ----------
+    let mut z_r  = Vec::<PyFr>::with_capacity(m);
+    let mut z_a  = Vec::<Vec<PyFr>>::with_capacity(m);
+    let mut z_b  = Vec::<Vec<PyFr>>::with_capacity(m);
+
+    for i in 0..m {
+        // z_r = ρ + e·r
+        let mut zr = rho;
+        let mut tmp = r_fr; tmp.mul_assign(&e); zr.add_assign(&tmp);
+        z_r.push(PyFr{fr:zr});
+
+        // 每个系数
+        let mut row_a = Vec::with_capacity(t_plus_1);
+        let mut row_b = Vec::with_capacity(t_plus_1);
+        for k in 0..t_plus_1 {
+            // z_k = α + e·φ
+            let mut z1 = alpha[i][k];
+            let mut t1 = a[i][k]; t1.mul_assign(&e); z1.add_assign(&t1);
+            row_a.push(PyFr{fr:z1});
+
+            // ż_k = β + e·φ̂
+            let mut z2 = beta[i][k];
+            let mut t2 = b[i][k]; t2.mul_assign(&e); z2.add_assign(&t2);
+            row_b.push(PyFr{fr:z2});
+        }
+        z_a.push(row_a);
+        z_b.push(row_b);
+    }
+
+    // ---------- 6. 包装 G1 为 PyG1 ----------
+    let wrap = |g:G1| PyG1{ g1:g, pp:Vec::new(), pplevel:0 };
+    Ok((
+        T1_raw.into_iter().map(wrap).collect(),
+        T2_raw.into_iter().map(wrap).collect(),
+        T3_raw.into_iter().map(wrap).collect(),
+        W_raw.into_iter().map(wrap).collect(),
+        z_r, z_a, z_b, e_py
+    ))
+}
+
+/// Σ-协议的 verifier，与 `polycommit_prove_sigma` 配套。  
+///
+/// 参数  
+/// -------
+/// C_list       : Sequence[PyG1] —— 第一批承诺 \(C_i\)  
+/// Chat_list    : Sequence[PyG1] —— 第二批承诺 \(\hat C_i\)  
+/// W_list       : Sequence[PyG1] —— \(W_i=g_0^{s_i}h^{\hat s_i}\)  
+/// proof_tuple  : `(T1_list, T2_list, T3_list, z_r_list, z_coeffs, z_hatcoeffs, e)`  
+/// gs           : Sequence[PyG1] —— 生成元 \(g_0\ldots g_t\)  
+/// h            : PyG1           —— 随机基点 \(h\)  
+///
+/// 返回 `true/false`。
+#[pyfunction]
+pub fn polycommit_verify_sigma(
+    C_list:      &PyAny,
+    Chat_list:   &PyAny,
+    W_list:      &PyAny,
+    proof_tuple: &PyAny,
+    gs:          &PyAny,
+    h:           &PyCell<PyG1>,
+) -> PyResult<bool> {
+    // ---- 长度检查 -------------------------------------------------
+    let C_seq    = PySequence::try_from(C_list)?;
+    let Chat_seq = PySequence::try_from(Chat_list)?;
+    let W_seq    = PySequence::try_from(W_list)?;
+    let m = C_seq.len()? as usize;
+    if Chat_seq.len()? as usize != m || W_seq.len()? as usize != m {
+        println!("Lengths mismatch: C={}, Chat={}, W={}", 
+                 C_seq.len()?, Chat_seq.len()?, W_seq.len()?);
+        return Ok(false)
+    }
+
+    // proof = (T1,T2,T3,z_r,zc,zh,e)
+    let pf = PySequence::try_from(proof_tuple)?;
+    if pf.len()? != 7 { return Ok(false) }
+    let T1_seq  = PySequence::try_from(pf.get_item(0)?)?;
+    let T2_seq  = PySequence::try_from(pf.get_item(1)?)?;
+    let T3_seq  = PySequence::try_from(pf.get_item(2)?)?;
+    let z_r_seq = PySequence::try_from(pf.get_item(3)?)?;
+    let zc_out  = PySequence::try_from(pf.get_item(4)?)?;
+    let zh_out  = PySequence::try_from(pf.get_item(5)?)?;
+    let e_any   = pf.get_item(6)?;
+
+    if [T1_seq.len()?,T2_seq.len()?,T3_seq.len()?,
+        z_r_seq.len()?,zc_out.len()?,zh_out.len()?].iter().any(|&x| x as usize != m)
+    { println!("Proof lengths mismatch: T1={}, T2={}, T3={}, z_r={}, zc_out={}, zh_out={}",
+              T1_seq.len()?, T2_seq.len()?, T3_seq.len()?,
+              z_r_seq.len()?, zc_out.len()?, zh_out.len()?);
+        return Ok(false) }
+
+    // ---- 解析生成元 ------------------------------------------------
+    let g_seq = PySequence::try_from(gs)?;
+    let t_plus_1 = PySequence::try_from(zc_out.get_item(0)?)?.len()? as usize;
+    if g_seq.len()? as usize != t_plus_1 { return Ok(false) }
+    let raw_g: Vec<G1> = (0..t_plus_1)
+        .map(|k| -> PyResult<G1> {
+            let cell = g_seq.get_item(k as isize)?;
+            let pyg_cell = cell.downcast::<PyCell<PyG1>>()?;
+            Ok(pyg_cell.borrow().g1.clone())
+        })
+        .collect::<PyResult<Vec<G1>>>()?;
+    let raw_h = h.borrow().g1.clone();
+
+    // ---- 检查挑战 e (硬编码 = 1) -----------------------------------
+    let e_fr = e_any.downcast::<PyCell<PyFr>>()?.borrow().fr;
+    if e_fr != Fr::one() { 
+        println!("Invalid challenge e: expected 1, got {:?}", e_fr);
+        return Ok(false) }
+
+    // ---- 助手闭包 --------------------------------------------------
+    let to_g1 = |x:&PyAny| -> PyResult<G1> {
+        Ok(x.downcast::<PyCell<PyG1>>()?.borrow().g1.clone())
+    };
+    let to_fr = |x:&PyAny| -> PyResult<Fr> {
+        Ok(x.downcast::<PyCell<PyFr>>()?.borrow().fr)
+    };
+
+    // ---- 逐多项式检查三条等式 --------------------------------------
+    for i in 0..m {
+        let C_i    = to_g1(C_seq.get_item(i as isize)?)?;
+        let Chat_i = to_g1(Chat_seq.get_item(i as isize)?)?;
+        let W_i    = to_g1(W_seq.get_item(i as isize)?)?;
+        let T1_i   = to_g1(T1_seq.get_item(i as isize)?)?;
+        let T2_i   = to_g1(T2_seq.get_item(i as isize)?)?;
+        let T3_i   = to_g1(T3_seq.get_item(i as isize)?)?;
+        let z_r    = to_fr(z_r_seq.get_item(i as isize)?)?;
+
+        // z 向量
+        let zc_seq = PySequence::try_from(zc_out.get_item(i as isize)?)?;
+        let zh_seq = PySequence::try_from(zh_out.get_item(i as isize)?)?;
+        if zc_seq.len()? as usize != t_plus_1 ||
+           zh_seq.len()? as usize != t_plus_1 { 
+            println!("zc/zh length mismatch for i={}: {} vs {}", 
+                     i, zc_seq.len()?, zh_seq.len()?);
+            return Ok(false) }
+
+        // ---- Eq (1) ----
+        let mut left1 = G1::zero();
+        for k in 0..t_plus_1 {
+            let mut term = raw_g[k];               // g_k
+            term.mul_assign(to_fr(zc_seq.get_item(k as isize)?)?);
+            left1.add_assign(&term);
+        }
+        let mut hzr = raw_h.clone(); hzr.mul_assign(z_r);
+        left1.add_assign(&hzr);
+
+        let mut right1 = T1_i.clone();
+        right1.add_assign(&C_i);                   // e=1
+
+        if left1 != right1 { 
+            println!("Failed Eq (1) for i={}: left1 = {:?}, right1 = {:?}\n", i, left1, right1);
+            return Ok(false) }
+
+        // ---- Eq (2) ----
+        let mut left2 = G1::zero();
+        for k in 0..t_plus_1 {
+            let mut term = raw_g[k];
+            term.mul_assign(to_fr(zh_seq.get_item(k as isize)?)?);
+            left2.add_assign(&term);
+        }
+        left2.add_assign(&hzr);                    // 同 h^{z_r}
+
+        let mut right2 = T2_i.clone();
+        right2.add_assign(&Chat_i);
+
+        if left2 != right2 { 
+            println!("Failed Eq (2) for i={}: left2 = {:?}, right2 = {:?}\n", i, left2, right2);
+            return Ok(false) }
+
+        // ---- Eq (3) ----
+        let mut left3 = raw_g[0];                  // g0^{zc0}
+        left3.mul_assign(to_fr(zc_seq.get_item(0)?)?);
+        let mut hzh0 = raw_h.clone();
+        hzh0.mul_assign(to_fr(zh_seq.get_item(0)?)?);
+        left3.add_assign(&hzh0);
+
+        let mut right3 = T3_i.clone();
+        right3.add_assign(&W_i);
+
+        if left3 != right3 { 
+            println!("Failed Eq (3) for i={}: left3 = {:?}, right3 = {:?}\n", i, left3, right3);
+            return Ok(false) }
+    }
+
+    Ok(true)
+}
+
 #[pyfunction]
 pub fn polycommit_compute_comms_t_hats(
         a_vecs: &PyAny,
@@ -3121,6 +3471,10 @@ pub fn register(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(polycommit_verify_double_batch_inner_product_one_known))?;
     m.add_wrapped(wrap_pyfunction!(polycommit_prove_double_batch_inner_product_opt))?;
     m.add_wrapped(wrap_pyfunction!(polycommit_verify_double_batch_inner_product_one_known_but_differenter))?;
+
+    m.add_wrapped(wrap_pyfunction!(polycommit_prove_sigma))?;
+    
+    m.add_wrapped(wrap_pyfunction!(polycommit_verify_sigma))?;
     Ok(())
     
 }
