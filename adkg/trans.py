@@ -657,10 +657,10 @@ class Trans_Pre(Trans):
         self.acss_task = asyncio.create_task(self.acss_step_log(acss_outputs, trans_values, acss_signal))
         
 
-    async def run_trans(self, values, rand_values):     
+    async def run_trans(self, values, rand_values, w_list):     
         self.len_values = len(values)
 
-        trans_values = (values, rand_values)
+        trans_values = (values, rand_values, w_list)
         self.acss_task = asyncio.create_task(self.acss_step(trans_values))
 
 
@@ -708,7 +708,7 @@ class Trans_Foll(Trans):
 
         results = await asyncio.gather(*self.acss_tasks)
 
-        dealer, _, shares, commitments, omega, gamma, masked = zip(*results)
+        dealer, _, shares, commitments, omega, mask, hat_mask, w = zip(*results)
 
 
         outputs = {}
@@ -717,8 +717,9 @@ class Trans_Foll(Trans):
                 'shares':  shares[i],
                 'commits': commitments[i],
                 'omega':   omega[i],
-                'gamma':   gamma[i],
-                'masked':  masked[i],
+                'mask':   mask[i],
+                'hat_mask':  hat_mask[i],
+                'w': w[i]
             }
         return outputs
     
@@ -937,7 +938,7 @@ class Trans_Foll(Trans):
         sr = Serial(self.G1)
         de_masked_values = [self.ZR(0) for _ in range(self.n)]
         for j in LT:
-            de_masked_values[j] = self.ZR(acss_outputs[j]['masked'][0])
+            de_masked_values[j] = self.ZR(acss_outputs[j]['mask'][0])
 
 
         GFEG1 = GF(Subgroup.BLS12_381)
@@ -947,13 +948,22 @@ class Trans_Foll(Trans):
         err_list = list(err)
 
   
-        for i in range(len(err_list)): 
-            if len(err_list[i]) == 0: 
-                continue
-            else: 
-                for j in range(len(err_list[i])): 
-                    LT.pop(err_list[i][j])
-        GT = LT
+        # for i in range(len(err_list)): 
+        #     if len(err_list[i]) == 0: 
+        #         continue
+        #     else: 
+        #         for j in range(len(err_list[i])): 
+        #             LT.pop(err_list[i][j])
+        # GT = LT
+
+        filtered = [j for j in LT if all(j not in errs for errs in err_list)]
+
+
+        if filtered:
+            ref_w = acss_outputs[filtered[0]]['w']
+            GT = [j for j in filtered if acss_outputs[j]['w'] == ref_w]
+        else:
+            GT = []
 
 
         # MVBA

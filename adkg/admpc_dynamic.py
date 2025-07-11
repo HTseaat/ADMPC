@@ -506,7 +506,7 @@ class ADMPC_Dynamic(ADMPC):
                 rounds = math.ceil(r_num / (self.n - self.t))
             else: 
                 rounds = 1
-            rand_shares = await bundle_foll.run_bundle(r_num, rounds)
+            rand_shares, w_list = await bundle_foll.run_bundle(r_num, rounds)
             required_len = 2 * w + 1
             if len(rand_shares) < required_len:
                 pad = rand_shares[:required_len - len(rand_shares)]
@@ -549,7 +549,7 @@ class ADMPC_Dynamic(ADMPC):
                     trans_pre = Trans_Pre(self.public_keys, self.private_key, 
                                     self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                     transsend, transrecv, self.pc, self.curve_params, mpc_instance=self)
-                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares))
+                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares, w_list))
                     
                     self.admpc_control_instance.control_signal.set()
                     trans_pre_time = time.time() - trans_pre_time
@@ -592,7 +592,7 @@ class ADMPC_Dynamic(ADMPC):
                     trans_pre = Trans_Pre(self.public_keys, self.private_key, 
                                     self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                     transsend, transrecv, self.pc, self.curve_params, mpc_instance=self)
-                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares))
+                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares, w_list))
                     
                     self.admpc_control_instance.control_signal.set()
                     trans_pre_time = time.time() - trans_pre_time
@@ -647,7 +647,7 @@ class ADMPC_Dynamic(ADMPC):
                     rounds = math.ceil(r_num / (self.n - self.t))
                 else: 
                     rounds = 1
-                rand_shares = await bundle_foll.run_bundle(r_num, rounds)
+                rand_shares, w_list = await bundle_foll.run_bundle(r_num, rounds)
                 required_len = 2 * w + 1
                 if len(rand_shares) < required_len:
                     pad = rand_shares[:required_len - len(rand_shares)]
@@ -692,7 +692,7 @@ class ADMPC_Dynamic(ADMPC):
                     trans_pre = Trans_Pre(self.public_keys, self.private_key, 
                                     self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                     transsend, transrecv, self.pc, self.curve_params, mpc_instance=self)
-                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares))
+                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares, w_list))
                     
                     self.admpc_control_instance.control_signal.set()
                     trans_pre_time = time.time() - trans_pre_time
@@ -737,7 +737,7 @@ class ADMPC_Dynamic(ADMPC):
                     trans_pre = Trans_Pre(self.public_keys, self.private_key, 
                                     self.g, self.h, self.n, self.t, self.deg, self.my_id, 
                                     transsend, transrecv, self.pc, self.curve_params, mpc_instance=self)
-                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares))
+                    trans_pre_task = asyncio.create_task(trans_pre.run_trans(gate_outputs, rand_shares, w_list))
                         
                     self.admpc_control_instance.control_signal.set()
                     trans_pre_time = time.time() - trans_pre_time

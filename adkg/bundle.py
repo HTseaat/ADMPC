@@ -91,8 +91,8 @@ class Bundle:
                 self.acss_tasks[i] = asyncio.create_task(self.acss.avss_bundle(0, dealer_id=i))
 
         while True:
-            (dealer, _, shares, commitments) = await self.acss.output_queue.get()
-            outputs[dealer] = {'shares':shares, 'commits':commitments}
+            (dealer, _, shares, commitments, w_list) = await self.acss.output_queue.get()
+            outputs[dealer] = {'shares':shares, 'commits':commitments, 'w_list': w_list}
 
             if len(outputs) >= self.n - self.t:
 
@@ -282,20 +282,20 @@ class Bundle:
                 acss_signal.clear()
 
         secrets = [[self.ZR(0)]*self.n for _ in range(self.rand_num)]
+        w_lists = {}
 
         for idx in range(self.rand_num):
             for node in range(self.n):
                 if node in self.mks:
                     secrets[idx][node] = acss_outputs[node]['shares']['msg'][0][idx]
-
-                
+                    w_lists[node] = acss_outputs[node]['w_list']
         
         z_shares = [[self.ZR(0) for _ in range(self.n-self.t)] for _ in range(self.rand_num)]
 
         for i in range(self.rand_num): 
             for j in range(self.n-self.t): 
                 z_shares[i][j] = self.dotprod(self.matrix[j], secrets[i])
-        return (self.mks, z_shares)
+        return (self.mks, z_shares, w_lists)
     
     async def run_bundle(self, w, rounds):
         import time
@@ -319,7 +319,7 @@ class Bundle:
         await acs
         output = await key_task
         await asyncio.gather(*work_tasks)
-        mks, new_shares = output
+        mks, new_shares, w_list = output
         rand_shares = []
         for i in range(self.rand_num): 
             if i == self.rand_num - 1: 
@@ -332,7 +332,7 @@ class Bundle:
         print(f"my id: {self.my_id} RAND protocol total time: {duration:.4f} seconds")
 
         self.output_queue.put_nowait(rand_shares)
-        return rand_shares
+        return rand_shares, w_list
 
 
 class Bundle_Pre(Bundle):
@@ -488,9 +488,10 @@ class Bundle_Foll(Bundle):
 
         acss_signal = asyncio.Event()
         self.acss_task = asyncio.create_task(self.acss_step(self.rand_num))
-        acss_outputs = await self.acss_task
+        acss_outputs, w_list = await self.acss_task
 
         key_proposal = list(acss_outputs.keys())
+
 
         # MVBA
         create_acs_task = asyncio.create_task(self.agreement_dynamic(key_proposal, acss_outputs, acss_signal))
@@ -508,7 +509,7 @@ class Bundle_Foll(Bundle):
             else: 
                 rand_shares = rand_shares + new_shares[i]
 
-        return rand_shares
+        return rand_shares, w_list
 
     async def commonsubset_dynamic(self, rbc_out, acss_outputs, acss_signal, rbc_signal, rbc_values, coin_keys, aba_in, aba_out):
         assert len(rbc_out) == self.n
@@ -627,12 +628,11 @@ class Bundle_Foll(Bundle):
 
 
         results = await asyncio.gather(*self.acss_tasks)
-
-        dealer, _, shares, commitments = zip(*results)
+        dealer, _, shares, commitments, w_list = zip(*results)
         
         outputs = {}
-        for dealer_id, _, share_info, _ in results:
+        for dealer_id, _, share_info, _, _ in results:
             outputs[dealer_id] = share_info['msg']
 
-        return outputs
+        return outputs, w_list
 

@@ -206,13 +206,13 @@ class ACSS:
     def _decode_and_verify_trans_log_sync(self, dealer_id: int, m_bytes: bytes, len_values: int) -> bool:
         """Sync helper used by run_in_executor for TRANS‑LOG variant."""
         decode_time = time.time()
-        disp, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey = self.decode_proposal_trans_log(
+        disp, commit_peds, commit_tests, omega, mask, hat_mask, w, shared, ephkey = self.decode_proposal_trans_log(
             m_bytes, len_values
         )
         decode_time = time.time() - decode_time
         verify_time = time.time()
         ok = self.verify_proposal_trans_log(
-            dealer_id, disp, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey, len_values
+            dealer_id, disp, commit_peds, commit_tests, omega, mask, hat_mask, w, shared, ephkey, len_values
         )
         verify_time = time.time() - verify_time
         return ok
@@ -404,18 +404,29 @@ class ACSS:
 
         # --- Parse the appended proof elements: omega, gamma, masked ---
         f_size = self.sr.f_size
-        # proof elements are appended immediately after the commitments
-        omega_start = com_size
-        omega_end = omega_start + g_size
-        gamma_start = omega_end
-        gamma_end = gamma_start + g_size
-        masked_start = gamma_end
-        masked_end = masked_start + f_size
-        omega = self.sr.deserialize_g(proposal[omega_start:omega_end])
-        gamma = self.sr.deserialize_g(proposal[gamma_start:gamma_end])
-        masked = self.sr.deserialize_fs(proposal[masked_start:masked_end])[0]
 
-        idx = com_size + 2 * g_size + f_size
+
+        offset = com_size
+
+        # omega_agg
+        omega = self.sr.deserialize_g(proposal[offset: offset + g_size])
+        offset += g_size
+
+        # mask_agg
+        mask_agg = self.sr.deserialize_fs(proposal[offset: offset + f_size])[0]
+        offset += f_size
+
+        # hat_mask_agg
+        hat_mask_agg = self.sr.deserialize_fs(proposal[offset: offset + f_size])[0]
+        offset += f_size
+
+        # w_agg
+        w_agg = self.sr.deserialize_g(proposal[offset: offset + g_size])
+        offset += g_size
+
+
+        # idx = com_size + 2 * g_size + f_size
+        idx = offset
 
         # roothash
         rlen = int.from_bytes(proposal[idx:idx + 2], "big"); idx += 2
@@ -465,7 +476,7 @@ class ACSS:
         ephkey = self.sr.deserialize_g(proposal[ciphertext_block_start + len(ciphertext_block):])
 
 
-        return (ctx_bytes, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey)
+        return (ctx_bytes, commit_peds, commit_tests, omega, mask_agg, hat_mask_agg, w_agg, shared, ephkey)
     
     def decode_proposal(self, proposal):
         g_size = self.sr.g_size
@@ -594,7 +605,7 @@ class ACSS:
         
         if dealer_id > 2 * self.t:
             self.acss_status[dealer_id] = True
-            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key]
+            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key, W_list]
             return True
         
 
@@ -607,7 +618,7 @@ class ACSS:
 
         self.acss_status[dealer_id] = ok
         if ok:
-            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key]
+            self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key, W_list]
         return ok
 
     def verify_proposal_log(self, dealer_id, dispersal_msg, commits, shared, ephkey, poly_num):
@@ -659,7 +670,7 @@ class ACSS:
             self.data[dealer_id] = [commits, phis, witness, ephkey, shared_key]
         return ok
 
-    def verify_proposal_trans_log(self, dealer_id, dispersal_msg, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey, poly_num):
+    def verify_proposal_trans_log(self, dealer_id, dispersal_msg, commit_peds, commit_tests, omega, mask, hat_mask, w, shared, ephkey, poly_num):
 
 
         if self.private_key is None:
@@ -685,7 +696,7 @@ class ACSS:
         
         if dealer_id > 2 * self.t:
             self.acss_status[dealer_id] = True
-            self.data[dealer_id] = [commit_peds, commit_tests, phis, witness, omega, gamma, masked, ephkey, shared_key]
+            self.data[dealer_id] = [commit_peds, commit_tests, phis, witness, omega, mask, hat_mask, w, ephkey, shared_key]
             return True
 
         i = self.my_id + 1
@@ -697,9 +708,18 @@ class ACSS:
         if not verified:
             self.acss_status[dealer_id] = False
             return False
+        
+        # Verify aggregated consistency proof (Algorithm 6)
+        g_s_agg = G1.identity()
+        for ped in commit_peds:
+            g_s_agg *= ped
+        if not self.verify_consis_bundle(g_s_agg, mask, hat_mask, omega):
+            print(f"my id: {self.my_id} verify_consis failed")
+            self.acss_status[dealer_id] = False
+            return False
 
         self.acss_status[dealer_id] = True
-        self.data[dealer_id] = [commit_peds, commit_tests, phis, witness, omega, gamma, masked, ephkey, shared_key]
+        self.data[dealer_id] = [commit_peds, commit_tests, phis, witness, omega, mask, hat_mask, w, ephkey, shared_key]
         return True
 
     
@@ -873,6 +893,73 @@ class ACSS:
             gamma = self.tagvars[tag]['gamma']
             masked = self.tagvars[tag]['masked']
             self.output_queue.put_nowait((dealer_id, avss_id, shares, commitments, omega, gamma, masked))
+            output = True
+            logger.debug("[%d] Output", self.my_id)
+            multicast((HbAVSSMessageType.OK, ""))
+        else:
+            multicast((HbAVSSMessageType.IMPLICATE, self.private_key))
+            implicate_sent = True
+            logger.debug("Implicate Sent [%d]", dealer_id)
+            self.tagvars[tag]['in_share_recovery'] = True
+
+        while True:
+            # Bracha-style agreement
+            sender, avss_msg = await recv()
+
+            # IMPLICATE
+            if avss_msg[0] == HbAVSSMessageType.IMPLICATE and not self.tagvars[tag]['in_share_recovery']:
+                if sender not in implicate_set:
+                    implicate_set.add(sender)
+                    logger.debug("Handling Implicate Message [%d]", dealer_id)
+                    # validate the implicate
+                    #todo: implicate should be forwarded to others if we haven't sent one
+                    if await self._handle_implication(tag, sender, avss_msg[1]):
+                        # proceed to share recovery
+                        logger.debug("Handle implication called [%d]", dealer_id)
+                        self.tagvars[tag]['in_share_recovery'] = True
+                        await self._handle_share_recovery(tag)
+                        logger.debug("[%d] after implication", self.my_id)
+
+            #todo find a more graceful way to handle different protocols having different recovery message types
+            if avss_msg[0] in [HbAVSSMessageType.KDIBROADCAST, HbAVSSMessageType.RECOVERY1, HbAVSSMessageType.RECOVERY2]:
+                await self._handle_share_recovery(tag, sender, avss_msg)
+            # OK
+            if avss_msg[0] == HbAVSSMessageType.OK and sender not in ok_set:
+                # logger.debug("[%d] Received OK from [%d]", self.my_id, sender)
+                ok_set.add(sender)
+
+            # The only condition where we can terminate
+            if (len(ok_set) == 3 * self.t + 1) and output:
+                logger.debug("[%d] exit", self.my_id)
+                break
+
+    async def _process_avss_msg_bundle_log(self, avss_id, dealer_id, rbc_msg):
+        tag = f"{dealer_id}-{avss_id}-B-AVSS"
+        send, recv = self.get_send(tag), self.subscribe_recv(tag)
+        self._init_recovery_vars(tag)
+
+        def multicast(msg):
+            for i in range(self.n):
+                send(i, msg)
+
+        self.tagvars[tag]['io'] = [send, recv, multicast]
+        self.tagvars[tag]['in_share_recovery'] = False
+        # dispersal_msg, commits, ephkey = self.decode_proposal(rbc_msg)
+        # dispersal_msg, commits, ephkey = self.decode_proposal(rbc_msg)
+        
+        ok_set = set()
+        implicate_set = set()
+        output = False
+
+        # self.tagvars[tag]['all_shares_valid'] = self._handle_dealer_msgs(tag, dealer_id)
+        self.tagvars[tag]['all_shares_valid'] = self._handle_dealer_msgs_bundle_log(tag, dealer_id)
+
+        if self.tagvars[tag]['all_shares_valid']:
+            
+            shares = {'msg': self.tagvars[tag]['shares']}
+            commitments = self.tagvars[tag]['commitments']
+            w_list = self.tagvars[tag]['W_list']
+            self.output_queue.put_nowait((dealer_id, avss_id, shares, commitments, w_list))
             output = True
             logger.debug("[%d] Output", self.my_id)
             multicast((HbAVSSMessageType.OK, ""))
@@ -1553,6 +1640,21 @@ class ACSS:
         masked = phi_const + r_k_li
         return omega, gamma, masked
 
+    def prove_consis_bundle(self, phi_const, q1, r_k_li, q3):
+        g0 = self.gs[0]          # g_0 in hbPolyCommit
+        omega = (g0 ** r_k_li) * (self.h ** q3)
+        mask = phi_const + r_k_li
+        hat_mask = q1 + q3
+        return mask, hat_mask, omega
+
+    def verify_consis_bundle(self, g_s, mask, hat_mask, omega):
+        g0 = self.gs[0]
+        # Left-hand side
+        lhs = (g0 ** mask) * (self.h ** hat_mask)
+        # Right-hand side
+        rhs = g_s * omega
+        return lhs == rhs
+
     # ------------------------------------------------------------------
     # VerifyConsis — verifier side consistency proof
     # ------------------------------------------------------------------
@@ -1591,27 +1693,27 @@ class ACSS:
         while len(values) % (batch_size) != 0:
             values.append(0)
         """
-        trans_values, trans_random_values = values
+        trans_values, trans_random_values, w_list = values
 
         phi_test = [None] * len(trans_values)
         r_shared = self.field.rand()
         commit_pedersen_test = [None] * len(trans_values)
         commitments_test = [None] * len(trans_values)
         r_individual = trans_random_values.pop(0)
-        omega_list, gamma_list, masked_values = [], [], []
+        mask_list, hat_mask_list, omega_list = [], [], []
         for k in range(len(trans_values)):
             phi_test[k] = self.poly.random(self.t, trans_values[k])
 
             # -------- ProveConsis (Alg-6 line 104) --------
-            omega_k, gamma_k, masked_k = self._prove_consis(
+            mask_k, hat_mask_k, omega_k = self.prove_consis_bundle(
                 phi_test[k].coeffs[0],   # φ0
                 r_individual,                   # q1
                 trans_random_values.pop(0),                  # [r_k]_l^i
                 trans_random_values.pop(0)                    # q3
             )
+            mask_list.append(mask_k)
+            hat_mask_list.append(hat_mask_k)
             omega_list.append(omega_k)
-            gamma_list.append(gamma_k)
-            masked_values.append(masked_k)
         
 
         coeffs_list = [phi.coeffs for phi in phi_test]
@@ -1624,18 +1726,26 @@ class ACSS:
         )
 
 
-        g_s_agg = commit_pedersen_test[0] * G1.identity()
+        # g_s_agg = commit_pedersen_test[0] * G1.identity()
         omega_agg = omega_list[0] * G1.identity()
-        gamma_agg = gamma_list[0] * G1.identity()
 
         for k in range(1, len(commit_pedersen_test)):
-            g_s_agg = g_s_agg * commit_pedersen_test[k]
+            # g_s_agg = g_s_agg * commit_pedersen_test[k]
             omega_agg = omega_agg * omega_list[k]
-            gamma_agg = gamma_agg * gamma_list[k]
 
-        masked_agg = ZR(0)
-        for v in masked_values:
-            masked_agg += v
+        mask_agg = ZR(0)
+        hat_mask_agg = ZR(0)
+        for v in mask_list:
+            mask_agg += v
+        for v in hat_mask_list:
+            hat_mask_agg += v
+        flat_w_list = [elm
+               for outer in w_list       
+               for mid in outer           
+               for elm in mid]     
+        w_agg = flat_w_list[0] * G1.identity()
+        for w in flat_w_list[1:]:
+            w_agg = w_agg * w
 
         shared_test, witnesses_test = self.poly_commit_log.double_batch_create_witness_rs(phi_test, r_individual+r_shared, n)
 
@@ -1669,8 +1779,10 @@ class ACSS:
 
         # Append aggregated consistency proof elements
         datab.extend(self.sr.serialize_g(omega_agg))
-        datab.extend(self.sr.serialize_g(gamma_agg))
-        datab.extend(self.sr.serialize_fs([masked_agg]))
+        datab.extend(self.sr.serialize_fs([mask_agg]))
+        datab.extend(self.sr.serialize_fs([hat_mask_agg]))
+
+        datab.extend(self.sr.serialize_g(w_agg))
 
         serialized_shared = self.serialize_shared(shared_test)
         datab.extend(serialized_shared)
@@ -1804,7 +1916,7 @@ class ACSS:
     #@profile
     def _handle_dealer_msgs_trans_log(self, tag, dealer_id):
 
-        commit_peds, commit_tests, phis, witness, omega, gamma, masked, ephkey, shared_key = self.data[dealer_id]
+        commit_peds, commit_tests, phis, witness, omega, mask, hat_mask, w, ephkey, shared_key = self.data[dealer_id]
 
         self.tagvars[tag]['shared_key'] = shared_key
         self.tagvars[tag]['commitments'] = (commit_peds, commit_tests)
@@ -1814,9 +1926,25 @@ class ACSS:
         if self.acss_status[dealer_id]: 
             self.tagvars[tag]['shares'] =  [phis]
             self.tagvars[tag]['omega'] =  [omega]
-            self.tagvars[tag]['gamma'] =  [gamma]
-            self.tagvars[tag]['masked'] =  [masked]
+            self.tagvars[tag]['mask'] =  [mask]
+            self.tagvars[tag]['hat_mask'] =  [hat_mask]
+            self.tagvars[tag]['w'] = [w]
             self.tagvars[tag]['witnesses'] = [witness]
+            return True
+        return False
+
+    #@profile
+    def _handle_dealer_msgs_bundle_log(self, tag, dealer_id):
+        commits, phis, witness, ephkey, shared_key, W_list = self.data[dealer_id]
+
+        self.tagvars[tag]['shared_key'] = shared_key
+        self.tagvars[tag]['commitments'] = commits
+        self.tagvars[tag]['ephemeral_public_key'] = ephkey
+        
+        if self.acss_status[dealer_id]: 
+            self.tagvars[tag]['shares'] =  [phis]
+            self.tagvars[tag]['witnesses'] = [witness]
+            self.tagvars[tag]['w_list'] = [W_list]
             return True
         return False
     
@@ -2005,7 +2133,7 @@ class ACSS:
         rbc_msg = await output.get()
 
 
-        await self._process_avss_msg_log(avss_id, dealer_id, rbc_msg)
+        await self._process_avss_msg_bundle_log(avss_id, dealer_id, rbc_msg)
         
         for task in self.tagvars[acsstag]['tasks']:
             task.cancel()
@@ -2296,13 +2424,12 @@ class ACSS_Pre(ACSS):
             
             broadcast_msg = self._get_dealer_msg_trans_log(values, n)
 
-
         send, recv = self.get_send(rbctag), self.subscribe_recv(rbctag)
         logger.debug("[%d] Starting reliable broadcast", self.my_id)
 
         async def predicate(_m):
-            dispersal_msg, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey = self.decode_proposal_trans_log(_m, self.len_values)
-            return self.verify_proposal_trans_log(dealer_id, dispersal_msg, commit_peds, commit_tests, omega, gamma, masked, shared, ephkey, self.len_values)
+            dispersal_msg, commit_peds, commit_tests, omega, mask, hat_mask, w, shared, ephkey = self.decode_proposal_trans_log(_m, self.len_values)
+            return self.verify_proposal_trans_log(dealer_id, dispersal_msg, commit_peds, commit_tests, omega, mask, hat_mask, w, shared, ephkey, self.len_values)
         
         output = asyncio.Queue()
 
@@ -2444,6 +2571,77 @@ class ACSS_Foll(ACSS):
         
         super().__init__(public_keys, private_key, g, h, n, t, deg, sc, my_id, send, recv, pc, field, G1, rbc_values)
 
+    async def _process_avss_msg_bundle(self, avss_id, dealer_id, rbc_msg):
+        tag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID}-B-AVSS"
+        send, recv = self.get_send(tag), self.subscribe_recv(tag)
+        self._init_recovery_vars(tag)
+
+        multi_list = []
+        for i in range(self.n): 
+            multi_list.append(i + (self.mpc_instance.layer_ID) * self.n)
+
+        def multicast(msg):
+            for i in range(self.n):
+                send(multi_list[i], msg)
+
+        self.tagvars[tag]['io'] = [send, recv, multicast]
+        self.tagvars[tag]['in_share_recovery'] = False
+                
+        ok_set = set()
+        implicate_set = set()
+        output = False
+
+        self.tagvars[tag]['all_shares_valid'] = self._handle_dealer_msgs_bundle_log(tag, dealer_id)
+
+
+        if self.tagvars[tag]['all_shares_valid']:
+
+            shares = {'msg': self.tagvars[tag]['shares']}
+            commitments = self.tagvars[tag]['commitments']
+            w_list = self.tagvars[tag]['w_list']
+            self.output_queue.put_nowait((dealer_id, avss_id, shares, commitments, w_list))
+            output = True
+            logger.debug("[%d] Output", self.my_id)
+            multicast((HbAVSSMessageType.OK, ""))
+            return (dealer_id, avss_id, shares, commitments, w_list)
+        else:
+            multicast((HbAVSSMessageType.IMPLICATE, self.private_key))
+            implicate_sent = True
+            logger.debug("Implicate Sent [%d]", dealer_id)
+            self.tagvars[tag]['in_share_recovery'] = True
+        
+
+        while True:
+            # Bracha-style agreement
+            sender, avss_msg = await recv()
+
+            # IMPLICATE
+            if avss_msg[0] == HbAVSSMessageType.IMPLICATE and not self.tagvars[tag]['in_share_recovery']:
+                if sender not in implicate_set:
+                    implicate_set.add(sender)
+                    logger.debug("Handling Implicate Message [%d]", dealer_id)
+                    # validate the implicate
+                    #todo: implicate should be forwarded to others if we haven't sent one
+                    if await self._handle_implication(tag, sender, avss_msg[1]):
+                        # proceed to share recovery
+                        logger.debug("Handle implication called [%d]", dealer_id)
+                        self.tagvars[tag]['in_share_recovery'] = True
+                        await self._handle_share_recovery(tag)
+                        logger.debug("[%d] after implication", self.my_id)
+
+            #todo find a more graceful way to handle different protocols having different recovery message types
+            if avss_msg[0] in [HbAVSSMessageType.KDIBROADCAST, HbAVSSMessageType.RECOVERY1, HbAVSSMessageType.RECOVERY2]:
+                await self._handle_share_recovery(tag, sender, avss_msg)
+            # OK
+            if avss_msg[0] == HbAVSSMessageType.OK and sender not in ok_set:
+                # logger.debug("[%d] Received OK from [%d]", self.my_id, sender)
+                ok_set.add(sender)
+
+            # The only condition where we can terminate
+            if (len(ok_set) == 3 * self.t + 1) and output:
+                logger.debug("[%d] exit", self.my_id)
+                break
+    
     async def _process_avss_msg_dynamic(self, avss_id, dealer_id, rbc_msg):
         tag = f"{dealer_id}-{avss_id}-{self.mpc_instance.layer_ID}-B-AVSS"
         send, recv = self.get_send(tag), self.subscribe_recv(tag)
@@ -2620,13 +2818,14 @@ class ACSS_Foll(ACSS):
             shares = {'msg': self.tagvars[tag]['shares']}
             commitments = self.tagvars[tag]['commitments']
             omega = self.tagvars[tag]['omega']
-            gamma = self.tagvars[tag]['gamma']
-            masked = self.tagvars[tag]['masked']
-            self.output_queue.put_nowait((dealer_id, avss_id, shares, commitments, omega, gamma, masked))
+            mask = self.tagvars[tag]['mask']
+            hat_mask = self.tagvars[tag]['hat_mask']
+            w = self.tagvars[tag]['w']
+            self.output_queue.put_nowait((dealer_id, avss_id, shares, commitments, omega, mask, hat_mask, w))
             output = True
             logger.debug("[%d] Output", self.my_id)
             multicast((HbAVSSMessageType.OK, ""))
-            return (dealer_id, avss_id, shares, commitments, omega, gamma, masked)
+            return (dealer_id, avss_id, shares, commitments, omega, mask, hat_mask, w)
 
         else:
             multicast((HbAVSSMessageType.IMPLICATE, self.private_key))
@@ -2738,8 +2937,8 @@ class ACSS_Foll(ACSS):
         rbc_msg = await output.get()
 
         # avss processing
-        (dealer, _, shares, commitments, omega, gamma, masked) = await self._process_avss_msg_dynamic_trans(avss_id, dealer_id, rbc_msg)
-        return (dealer, _, shares, commitments, omega, gamma, masked)
+        (dealer, _, shares, commitments, omega, mask, hat_mask, w) = await self._process_avss_msg_dynamic_trans(avss_id, dealer_id, rbc_msg)
+        return (dealer, _, shares, commitments, omega, mask, hat_mask, w)
     
     async def avss_bundle(self, avss_id, dealer_id, rounds):
         if dealer_id is None:
@@ -2811,9 +3010,9 @@ class ACSS_Foll(ACSS):
 
         # avss processing
         acss_process_time = time.time()
-        (dealer, _, shares, commitments) = await self._process_avss_msg_dynamic(avss_id, dealer_id, rbc_msg)
+        (dealer, _, shares, commitments, w_list) = await self._process_avss_msg_bundle(avss_id, dealer_id, rbc_msg)
         acss_process_time = time.time() - acss_process_time
-        return (dealer, _, shares, commitments)
+        return (dealer, _, shares, commitments, w_list)
     
     async def avss(self, avss_id, dealer_id, rounds):
         if dealer_id is None:
