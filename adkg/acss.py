@@ -2353,8 +2353,9 @@ class ACSS_Pre(ACSS):
         logger.debug("[%d] Starting reliable broadcast", self.my_id)
 
         async def predicate(_m):
-            dispersal_msg, commits, shared, ephkey = self.decode_proposal_bundle_log(_m, self.rand_num)
-            return self.verify_proposal_bundle_log(dealer_id, dispersal_msg, commits, shared, ephkey, self.rand_num)
+            dispersal_msg, commits, shared, ephkey, proof_tuple, W_list = self.decode_proposal_bundle_log(_m, self.rand_num)
+
+            return self.verify_proposal_bundle_log(dealer_id, dispersal_msg, commits, shared, ephkey, self.rand_num, proof_tuple, W_list)
         
         output = asyncio.Queue()
 

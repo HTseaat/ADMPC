@@ -507,6 +507,10 @@ class ADMPC_Dynamic(ADMPC):
             else: 
                 rounds = 1
             rand_shares = await bundle_foll.run_bundle(r_num, rounds)
+            required_len = 2 * w + 1
+            if len(rand_shares) < required_len:
+                pad = rand_shares[:required_len - len(rand_shares)]
+                rand_shares.extend(pad)
             rand_foll_time = time.time() - rand_foll_time
             print(f"layer ID: {self.layer_ID} rand_foll_time: {rand_foll_time}")
             
@@ -644,6 +648,10 @@ class ADMPC_Dynamic(ADMPC):
                 else: 
                     rounds = 1
                 rand_shares = await bundle_foll.run_bundle(r_num, rounds)
+                required_len = 2 * w + 1
+                if len(rand_shares) < required_len:
+                    pad = rand_shares[:required_len - len(rand_shares)]
+                    rand_shares.extend(pad)
                 rand_foll_time = time.time() - rand_foll_time
                 print(f"layer ID: {self.layer_ID} rand_foll_time: {rand_foll_time}")
                 
