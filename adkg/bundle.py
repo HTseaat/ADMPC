@@ -372,7 +372,7 @@ class Bundle_Foll(Bundle):
         super().__init__(public_keys, private_key, g, h, n, t, deg, my_id, send, recv, pc, curve_params, matrix)  
 
     
-    async def agreement_dynamic(self, key_proposal, acss_outputs, acss_signal):
+    async def agreement_dynamic(self, key_proposal, acss_outputs, w_list, acss_signal):
         aba_inputs = [asyncio.Queue() for _ in range(self.n)]
         aba_outputs = [asyncio.Queue() for _ in range(self.n)]
         rbc_outputs = [asyncio.Queue() for _ in range(self.n)]
@@ -471,6 +471,7 @@ class Bundle_Foll(Bundle):
             ),
             self.generate_rand_dynamic(
                 acss_outputs,
+                w_list, 
                 acss_signal,
                 rbc_values,
                 rbc_signal,
@@ -494,22 +495,29 @@ class Bundle_Foll(Bundle):
 
 
         # MVBA
-        create_acs_task = asyncio.create_task(self.agreement_dynamic(key_proposal, acss_outputs, acss_signal))
+        create_acs_task = asyncio.create_task(self.agreement_dynamic(key_proposal, acss_outputs, w_list, acss_signal))
         acs, key_task, work_tasks = await create_acs_task
         await acs
         output = await key_task
         await asyncio.gather(*work_tasks)
 
-        mks, new_shares = output
-        rand_shares = []
-        for i in range(self.rand_num): 
-            if i == self.rand_num - 1: 
-                w = w - i * (self.n - self.t)
-                rand_shares = rand_shares + new_shares[i][:w]
-            else: 
-                rand_shares = rand_shares + new_shares[i]
+        mks, new_rand, new_hat_rand, new_w_group = output
+        mid = self.rand_num // 2
+        new_rand_shares, new_hat_rand_shares, new_w_commitment = [], [], []
+        t_flatten = time.time()
+        for i in range(mid):
+            if i == mid - 1:
+                rem = w - i * (self.n - self.t)
+                # 只取最后一轮所需元素
+                new_rand_shares.extend(new_rand[i][:rem])
+                new_hat_rand_shares.extend(new_hat_rand[i][:rem])
+                new_w_commitment.extend(new_w_group[i][:rem])
+            else:
+                new_rand_shares.extend(new_rand[i])
+                new_hat_rand_shares.extend(new_hat_rand[i])
+                new_w_commitment.extend(new_w_group[i])
 
-        return rand_shares, w_list
+        return new_rand_shares, new_hat_rand_shares, new_w_commitment
 
     async def commonsubset_dynamic(self, rbc_out, acss_outputs, acss_signal, rbc_signal, rbc_values, coin_keys, aba_in, aba_out):
         assert len(rbc_out) == self.n
@@ -569,7 +577,7 @@ class Bundle_Foll(Bundle):
 
         rbc_signal.set()
     
-    async def generate_rand_dynamic(self, acss_outputs, acss_signal, rbc_values, rbc_signal):
+    async def generate_rand_dynamic(self, acss_outputs, w_list, acss_signal, rbc_values, rbc_signal):
         await rbc_signal.wait()
         rbc_signal.clear()
 
@@ -594,22 +602,61 @@ class Bundle_Foll(Bundle):
                 flat.extend(round_shares)
             acss_outputs[node] = flat
 
+        w_group_time = time.time()
+        # -- Split secrets into rand (first half) and hat_rand (second half), selecting only the first 2*t+1 nodes from self.mks --
+        mid = self.rand_num // 2
 
-        secrets = [[self.ZR(0) for _ in range(self.n)] for _ in range(self.rand_num)]
-        for node, rounds_shares in acss_outputs.items():
-            if node in self.mks:
-                for idx in range(self.rand_num):
-                    secrets[idx][node] = rounds_shares[idx]
+        # Select the first 2*t+1 nodes from self.mks (sorted)
+        selected = sorted(self.mks)
 
+        # Initialize rand (mid x |selected|) and hat_rand ((rand_num-mid) x |selected|)
+        rand     = [[self.ZR(0) for _ in selected] for _ in range(mid)]
+        hat_rand = [[self.ZR(0) for _ in selected] for _ in range(self.rand_num - mid)]
+
+        # Populate these matrices from acss_outputs
+        for idx_node, node in enumerate(selected):
+            rounds_shares = acss_outputs[node]  
+            for idx in range(self.rand_num):
+                if idx < mid:
+                    rand[idx][idx_node] = rounds_shares[idx]
+                else:
+                    hat_rand[idx - mid][idx_node] = rounds_shares[idx]
+
+        # 1. Flatten w_list for selected nodes
+        flat_w = {}
+        for node in selected:
+            # w_list[node] is originally a matrix of shape (rounds x list[PyG1])
+            flat = []
+            for row in w_list[node]:
+                flat.extend(row)
+            flat_w[node] = flat
         
-    
-        z_shares = [[self.ZR(0) for _ in range(self.n-self.t)] for _ in range(self.rand_num)]
+        # Initialize new_rand and new_hat_rand with dimensions mid x (n-t)
+        new_rand     = [[self.ZR(0) for _ in range(self.n - self.t)] for _ in range(mid)]
+        new_hat_rand = [[self.ZR(0) for _ in range(self.n - self.t)] for _ in range(mid)]
+        new_w_group = [
+            [self.G1.identity() for _ in range(self.n - self.t)]
+            for _ in range(mid)
+        ]
 
-        for i in range(self.rand_num): 
-            for j in range(self.n-self.t): 
-                z_shares[i][j] = self.dotprod(self.matrix[j], secrets[i])
-                # r_shares[i][j] = self.dotprod(self.matrix[j], randomness[i])
-        return (self.mks, z_shares)
+        # 3. In a single loop, perform all three computations
+        for i in range(mid):
+            for j in range(self.n - self.t):
+                # Common interpolation coefficients
+                coeffs = [self.matrix[j][node] for node in selected]
+                # Ensure all coefficients are field elements
+                coeffs = [c if hasattr(c, 'fr') else self.ZR(c) for c in coeffs]
+
+                # (a) Interpolate rand and hat_rand
+                new_rand[i][j]     = self.dotprod(coeffs, rand[i])
+                new_hat_rand[i][j] = self.dotprod(coeffs, hat_rand[i])
+
+                # (b) Perform multiexp aggregation on group elements
+                elems = [flat_w[k][i] for k in selected]
+                elems = [flat_w[k][i] for k in selected]
+                new_w_group[i][j] = self.multiexp(elems, coeffs)
+        w_group_time = time.time() - w_group_time
+        return (self.mks, new_rand, new_hat_rand, new_w_group)
     
 
     async def acss_step(self, rounds):

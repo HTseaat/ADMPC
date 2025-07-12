@@ -1700,6 +1700,9 @@ class ACSS:
         commit_pedersen_test = [None] * len(trans_values)
         commitments_test = [None] * len(trans_values)
         r_individual = trans_random_values.pop(0)
+        half = len(trans_random_values) // 2
+        trans_hat_random_values = trans_random_values[half:]
+        trans_random_values     = trans_random_values[:half]
         mask_list, hat_mask_list, omega_list = [], [], []
         for k in range(len(trans_values)):
             phi_test[k] = self.poly.random(self.t, trans_values[k])
@@ -1709,7 +1712,7 @@ class ACSS:
                 phi_test[k].coeffs[0],   # φ0
                 r_individual,                   # q1
                 trans_random_values.pop(0),                  # [r_k]_l^i
-                trans_random_values.pop(0)                    # q3
+                trans_hat_random_values.pop(0)                    # q3
             )
             mask_list.append(mask_k)
             hat_mask_list.append(hat_mask_k)
@@ -1739,12 +1742,9 @@ class ACSS:
             mask_agg += v
         for v in hat_mask_list:
             hat_mask_agg += v
-        flat_w_list = [elm
-               for outer in w_list       
-               for mid in outer           
-               for elm in mid]     
-        w_agg = flat_w_list[0] * G1.identity()
-        for w in flat_w_list[1:]:
+        
+        w_agg = w_list[0] * G1.identity()
+        for w in w_list[1:]:
             w_agg = w_agg * w
 
         shared_test, witnesses_test = self.poly_commit_log.double_batch_create_witness_rs(phi_test, r_individual+r_shared, n)

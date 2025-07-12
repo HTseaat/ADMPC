@@ -19,6 +19,7 @@ from adkg.robust_rec import Robust_Rec
 from adkg.field import GF, GFElement
 from adkg.robust_reconstruction import robust_reconstruct_admpc
 from adkg.elliptic_curve import Subgroup
+from itertools import combinations
 
 import logging
 logger = logging.getLogger(__name__)
@@ -368,14 +369,132 @@ class Trans:
                 if i == j:
                     continue
                 xj = self.ZR(j + 1)
-                print(f"my id: {self.my_id} i: {i}, j: {j}, xi: {xi}, xj: {xj}")
                 # lam *= (-xj) * (xi - xj).inverse()
                 # Use exponent −1 to get multiplicative inverse in the field
                 lam *= (-xj) * (xi - xj) ** -1
-                print(f"my id: {self.my_id} lam: {lam}")
             coeffs[i] = lam
         return coeffs
+    
+    def reconstruct_aux(self, acss_outputs):
+        """
+        Reconstruct g^r  (from omega), g_0^{s_0}·h^{r_1} (from gamma),
+        and the scalar masked value from the ACSS outputs held
+        by the nodes in self.mks.
 
+        Returns (omega_0, gamma_0, masked_0)
+
+        * omega_0, gamma_0 are G1 elements
+        * masked_0 is a field element (self.ZR)
+        """
+        if len(self.mks) < self.t + 1:
+            raise ValueError("Need at least t+1 shares to interpolate")
+
+        idxs = list(self.mks)[: self.t + 1]  # take any t+1 indices
+        lambdas = self._lagrange_coeffs_at_zero(idxs)
+
+        # Interpolate in‑exponent for omega and gamma
+                # Interpolate in-exponent for omega, gamma, and g_s (Pedersen agg)
+        omega_0 = self.G1.identity()
+        gamma_0 = self.G1.identity()
+        g_s0    = self.G1.identity()
+
+        for i in idxs:
+            lam_i   = lambdas[i]
+
+            # omega / gamma
+            omega_i = acss_outputs[i]["omega"][0]
+            gamma_i = acss_outputs[i]["gamma"][0]
+            omega_0 *= omega_i ** int(lam_i)
+            gamma_0 *= gamma_i ** int(lam_i)
+
+            # aggregate this node's commit_peds then interpolate
+            commit_peds_i = acss_outputs[i]["commits"][0]     # tuple第0项
+            g_s_i = self.G1.identity()
+            for ped in commit_peds_i:
+                g_s_i *= ped
+            g_s0 *= g_s_i ** int(lam_i)
+
+        # ---- masked（域元素）普通插值 ----
+        masked_0 = self.ZR(0)
+        for i in idxs:
+            lam_i = lambdas[i]
+            masked_i = self.ZR(acss_outputs[i]["masked"][0])
+            masked_0 += masked_i * lam_i
+
+        # ------------------------------------------------------------------
+        # Equality check:  g_0^{masked_0} · omega_0  ==  g_s0 · gamma_0
+        # g_0 取自 hbPolyCommitg 随机基列表中的第 0 位
+        # ------------------------------------------------------------------
+        gs = self.G1.hash_many(b"hbPolyCommitg", self.t + 1)
+        g0 = gs[0]
+
+        left  = (g0 ** masked_0) * omega_0
+        right = g_s0 * gamma_0
+        print(f"type masked_0: {type(masked_0)}, type omega_0: {type(omega_0)}")
+
+        return left == right
+    
+    def reconstruct_omega(self, acss_outputs):
+
+        if len(self.mks) < self.t + 1:
+            raise ValueError("Need at least t+1 shares to interpolate")
+
+        idxs = list(self.mks)[: self.t + 1]  # take any t+1 indices
+        print(f"my id: {self.my_id} idxs: {idxs}")
+        lambdas = self._lagrange_coeffs_at_zero(idxs)
+        print(f"my id: {self.my_id} lambdas: {lambdas}")    
+
+        # Interpolate in‑exponent for omega and gamma
+                # Interpolate in-exponent for omega, gamma, and g_s (Pedersen agg)
+        omega_0 = self.G1.identity()
+
+        elems  = [acss_outputs[i]["omega"][0] for i in idxs]
+        coeffs = [lambdas[i]                for i in idxs]
+
+        coeffs = [int(c) for c in coeffs]
+
+        omega_0 = self.multiexp(elems, coeffs)
+
+
+        left  = omega_0
+        right = acss_outputs[0]['w']
+
+        rxy = right[0]
+
+        return left == rxy
+
+    def rec_omega(self, acss_outputs):
+        """
+        Find a subset idxs of size t+1 from self.mks such that
+            multiexp([ω_i for i in idxs], [λ_i]) == w_j
+        for some node j in the subset. Return the subset if found, otherwise raise.
+        """
+        if len(self.mks) < 2 * self.t + 1:
+            raise ValueError(f"Need at least 2t+1={2*self.t+1} nodes in mks, got {len(self.mks)}")
+
+        # Enumerate all subsets of size t+1 from self.mks
+        for idxs in combinations(sorted(self.mks), self.t + 1):
+
+            # Compute Lagrange coefficients at zero for the chosen indices
+            lambdas = self._lagrange_coeffs_at_zero(idxs)
+
+            # Perform multi-exponentiation to interpolate ω
+            elems  = [acss_outputs[i]["omega"][0] for i in idxs]
+            coeffs = [int(lambdas[i])            for i in idxs]
+            omega_0 = self.multiexp(elems, coeffs)
+
+        # Use the first node in the subset as reference and compare reconstructed ω to its w
+            ref = idxs[0]
+            w_ref = acss_outputs[ref]["w"][0]
+
+
+            if omega_0 == w_ref:
+                return list(idxs)
+
+        # If no subset matches, raise an error
+        raise RuntimeError("No size-(t+1) subset in mks satisfies ω == w")
+
+    
 
     async def rbc_masked_step(self, rbc_masked_input): 
 
@@ -909,11 +1028,13 @@ class Trans_Foll(Trans):
                 if node in self.mks: 
                     secrets[i][node] = acss_outputs[node]['shares']['msg'][0][i]
                     
+        valid_list = self.rec_omega(acss_outputs)
+
 
         sc_shares = []
         for i in range(secrets_num): 
             sc_shares.append([])
-            for j in self.mks:
+            for j in valid_list:
                 sc_shares[i].append([j+1, secrets[i][j]])
 
 
