@@ -361,7 +361,7 @@ class ADMPC_Dynamic(ADMPC):
         acss_start_time = time.time()
         self.public_keys = self.public_keys[self.n*self.layer_ID:self.n*self.layer_ID+self.n]
         cm = int(self.admpc_control_instance.total_cm/(self.admpc_control_instance.layer_num-4))
-        w = cm * 2
+        w = cm * 2 + 10
 
         input_num = w * 2
         print(f"cm: {cm} total_cm: {self.admpc_control_instance.total_cm}")

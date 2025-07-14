@@ -687,7 +687,7 @@ class APREP_Pre(APREP):
    
     async def run_aprep(self, cm):
 
-        gen_rand_task = asyncio.create_task(self.gen_rand_step(self.n*cm))
+        gen_rand_task = asyncio.create_task(self.gen_rand_step(self.n))
         
         mult_triples = [[self.ZR.rand() for _ in range(3)] for _ in range(cm)]
         chec_triples = [[self.ZR.rand() for _ in range(3)] for _ in range(cm)]
@@ -1040,7 +1040,7 @@ class APREP_Foll(APREP):
         gen_rand_outputs = []
 
         # Invoke Protocol Rand to generate random shares
-        gen_rand_outputs = await self.gen_rand_step(self.n*cm, gen_rand_outputs)
+        gen_rand_outputs = await self.gen_rand_step(self.n, gen_rand_outputs)
 
 
         self.acss_task = asyncio.create_task(self.acss_step(cm))
@@ -1075,7 +1075,7 @@ class APREP_Foll(APREP):
                 mult_triples_shares[node][i] = msg_flat[mult_start:mult_start + 3]
                 chec_triples_shares[node][i] = msg_flat[chec_start:chec_start + 3]
 
-                rands[node][i] = robust_rec_outputs[node * cm + i]
+                rands[node][i] = robust_rec_outputs[node]
 
         # This step begins the use of check triples to validate multiplication triples
         rho = [[0 for _ in range(cm)] for _ in range(len(acss_outputs))]
